@@ -25,6 +25,10 @@ from common.types import (
     TextPart,
 )
 from google.genai import types
+# Import Ethereum related libraries
+from web3 import Web3
+from eth_account import Account
+from eth_account.messages import encode_defunct
 
 
 logger = logging.getLogger(__name__)
@@ -119,9 +123,66 @@ class AgentWithTaskManager(ABC):
 
 
 class AgentTaskManager(InMemoryTaskManager):
-    def __init__(self, agent: AgentWithTaskManager):
+    def __init__(self, agent: AgentWithTaskManager, verify_signatures: bool = True):
         super().__init__()
         self.agent = agent
+        self.verify_signatures = verify_signatures
+
+    async def _validate_signature(self, task_send_params: TaskSendParams) -> tuple[bool, str]:
+        """Validate the signature from the Host Agent.
+        
+        Args:
+            task_send_params: The task parameters containing message metadata with signature.
+            
+        Returns:
+            A tuple of (is_valid, error_message).
+        """
+        # Skip validation if disabled
+        if not self.verify_signatures:
+            return True, ""
+            
+        try:
+            # Get session ID for signature verification
+            session_id = task_send_params.sessionId
+            
+            # Check if auth data exists in metadata
+            if (not task_send_params.message or 
+                not task_send_params.message.metadata or
+                'auth' not in task_send_params.message.metadata):
+                return False, "No authentication data found in message metadata"
+                
+            # Extract auth data
+            auth_data = task_send_params.message.metadata.get('auth', {})
+            address = auth_data.get('address')
+            signature = auth_data.get('signature')
+            
+            # Validate required fields
+            if not address:
+                return False, "Missing Ethereum address in auth data"
+                
+            if not signature:
+                return False, "Missing signature in auth data"
+                
+            # Reconstruct the original message that was signed
+            message_to_verify = f"{address}{session_id}"
+            message_hash = encode_defunct(text=message_to_verify)
+            
+            # Recover the address that signed the message
+            try:
+                recovered_address = Account.recover_message(message_hash, signature=signature)
+                
+                # Check if the recovered address matches the claimed address
+                if recovered_address.lower() != address.lower():
+                    return False, f"Signature verification failed. Expected {address}, got {recovered_address}"
+                    
+                logger.info(f"Signature verified successfully for address {address}")
+                return True, ""
+            except Exception as e:
+                return False, f"Error recovering address from signature: {e}"
+                
+        except Exception as e:
+            logger.error(f"Error validating signature: {e}")
+            return False, f"Error validating signature: {e}"
 
     async def _stream_generator(
         self, request: SendTaskStreamingRequest
@@ -217,6 +278,16 @@ class AgentTaskManager(InMemoryTaskManager):
         error = self._validate_request(request)
         if error:
             return error
+            
+        # Validate signature
+        is_valid, error_message = await self._validate_signature(request.params)
+        if not is_valid:
+            logger.warning(f"Signature validation failed: {error_message}")
+            return JSONRPCResponse(
+                id=request.id,
+                error=InternalError(message=f"Signature verification failed: {error_message}")
+            )
+            
         await self.upsert_task(request.params)
         return await self._invoke(request)
 
@@ -226,6 +297,16 @@ class AgentTaskManager(InMemoryTaskManager):
         error = self._validate_request(request)
         if error:
             return error
+            
+        # Validate signature
+        is_valid, error_message = await self._validate_signature(request.params)
+        if not is_valid:
+            logger.warning(f"Signature validation failed: {error_message}")
+            return JSONRPCResponse(
+                id=request.id,
+                error=InternalError(message=f"Signature verification failed: {error_message}")
+            )
+            
         await self.upsert_task(request.params)
         return self._stream_generator(request)
 

@@ -61,7 +61,17 @@ class ADKHostManager(ApplicationManager):
         self._session_service = InMemorySessionService()
         self._artifact_service = InMemoryArtifactService()
         self._memory_service = InMemoryMemoryService()
-        self._host_agent = HostAgent([], self.task_callback)
+        
+        # Get the Ethereum private key from environment variable
+        eth_private_key = os.environ.get('ETH_PRIVATE_KEY')
+        
+        # Initialize HostAgent with private key
+        self._host_agent = HostAgent(
+            remote_agent_addresses=[], 
+            task_callback=self.task_callback,
+            private_key=eth_private_key
+        )
+        
         self.user_id = 'test_user'
         self.app_name = 'A2A'
         self.api_key = api_key or os.environ.get('GOOGLE_API_KEY', '')

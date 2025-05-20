@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import uuid
 
 from common.client import A2ACardResolver
@@ -18,6 +19,10 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
+# Import Ethereum related libraries
+from web3 import Web3
+from eth_account import Account
+from eth_account.messages import encode_defunct
 
 from .remote_agent_connection import RemoteAgentConnections, TaskUpdateCallback
 
@@ -33,10 +38,23 @@ class HostAgent:
         self,
         remote_agent_addresses: list[str],
         task_callback: TaskUpdateCallback | None = None,
+        private_key: str = None,  # Add private key parameter
     ):
         self.task_callback = task_callback
         self.remote_agent_connections: dict[str, RemoteAgentConnections] = {}
         self.cards: dict[str, AgentCard] = {}
+        
+        # Get private key from environment variable if not provided
+        self.private_key = private_key or os.environ.get('ETH_PRIVATE_KEY')
+        
+        # Generate Ethereum address from private key if available
+        self.eth_address = None
+        if self.private_key:
+            try:
+                self.eth_address = Account.from_key(self.private_key).address
+            except Exception as e:
+                print(f"Error generating Ethereum address: {e}")
+                
         for address in remote_agent_addresses:
             card_resolver = A2ACardResolver(address)
             card = card_resolver.get_agent_card()
@@ -132,6 +150,26 @@ Current agent: {current_agent['active_agent']}
             )
         return remote_agent_info
 
+    def sign_message(self, message: str) -> str:
+        """Sign a message using the host agent's private key.
+        
+        Args:
+            message: The message to sign.
+            
+        Returns:
+            The hex string of the signature if successful, or None if failed.
+        """
+        if not self.private_key:
+            return None
+            
+        try:
+            message_hash = encode_defunct(text=message)
+            signed_message = Account.sign_message(message_hash, private_key=self.private_key)
+            return signed_message.signature.hex()
+        except Exception as e:
+            print(f"Error signing message: {e}")
+            return None
+
     async def send_task(
         self, agent_name: str, message: str, tool_context: ToolContext
     ):
@@ -160,6 +198,14 @@ Current agent: {current_agent['active_agent']}
         else:
             taskId = str(uuid.uuid4())
         sessionId = state['session_id']
+        
+        # Generate ECDSA signature for authentication
+        signature = None
+        if self.private_key and self.eth_address:
+            # Sign message combining agent address and session ID
+            message_to_sign = f"{self.eth_address}{sessionId}"
+            signature = self.sign_message(message_to_sign)
+        
         task: Task
         messageId = ''
         metadata = {}
@@ -169,7 +215,19 @@ Current agent: {current_agent['active_agent']}
                 messageId = state['input_message_metadata']['message_id']
         if not messageId:
             messageId = str(uuid.uuid4())
+            
+        # Add basic metadata
         metadata.update(conversation_id=sessionId, message_id=messageId)
+        
+        # Add signature information to metadata if available
+        if signature and self.eth_address:
+            metadata.update({
+                "auth": {
+                    "address": self.eth_address,
+                    "signature": signature
+                }
+            })
+        
         request: TaskSendParams = TaskSendParams(
             id=taskId,
             sessionId=sessionId,

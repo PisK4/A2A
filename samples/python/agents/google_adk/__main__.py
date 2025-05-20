@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 @click.command()
 @click.option('--host', default='localhost')
 @click.option('--port', default=10002)
-def main(host, port):
+@click.option('--verify-signatures', is_flag=True, default=True, help='Enable signature verification')
+def main(host, port, verify_signatures):
     try:
         # Check for API key only if Vertex AI is not configured
         if not os.getenv('GOOGLE_GENAI_USE_VERTEXAI') == 'TRUE':
@@ -53,9 +54,17 @@ def main(host, port):
             capabilities=capabilities,
             skills=[skill],
         )
+        
+        # Initialize the task manager with signature verification
+        logger.info(f"Initializing AgentTaskManager with signature verification: {verify_signatures}")
+        task_manager = AgentTaskManager(
+            agent=ReimbursementAgent(),
+            verify_signatures=verify_signatures
+        )
+        
         server = A2AServer(
             agent_card=agent_card,
-            task_manager=AgentTaskManager(agent=ReimbursementAgent()),
+            task_manager=task_manager,
             host=host,
             port=port,
         )
