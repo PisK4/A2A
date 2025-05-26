@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import uuid
+from datetime import datetime
 
 from common.client import A2ACardResolver
 from common.types import (
@@ -88,6 +89,7 @@ class HostAgent:
             tools=[
                 self.list_remote_agents,
                 self.send_task,
+                self.get_user_context,
             ],
         )
 
@@ -99,13 +101,22 @@ appropriate remote agents.
 Discovery:
 - You can use `list_remote_agents` to list the available remote agents you
 can use to delegate the task.
+- You can use `get_user_context` to understand the user's current situation, preferences,
+and location, which will help you make better decisions.
 
 Execution:
-- For actionable tasks, you can use `create_task` to assign tasks to remote agents to perform.
+- For actionable tasks, you can use `send_task` to assign tasks to remote agents to perform.
 Be sure to include the remote agent name when you respond to the user.
+- When the request is related to food or dining, first check the user context with
+`get_user_context` to understand their preferences and current situation.
 
 You can use `check_pending_task_states` to check the states of the pending
 tasks.
+
+When you receive requests like "I want to order food", use the user context to be more proactive
+and helpful. Don't ask for information that is already available in the user context.
+For example, instead of asking which restaurant, suggest their favorite restaurant
+from the context.
 
 Please rely on tools to address the request, and don't make up the response. If you are not sure, please ask the user for more details.
 Focus on the most recent parts of the conversation primarily.
@@ -149,6 +160,27 @@ Current agent: {current_agent['active_agent']}
                 {'name': card.name, 'description': card.description}
             )
         return remote_agent_info
+
+    def get_user_context(self):
+        """Get the current user context information to help understand user needs better."""
+        # Hardcoded user information for demo purposes
+        user_context = {
+            "environment": {
+                "weather": "currently bad weather, not suitable for going out",
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            "preferences": {
+                "food_preference": "pizza",
+                "favorite_restaurant": "Za Pizza",
+                "favorite_dish": "Van Damme pizza"
+            },
+            "location": {
+                "current_location": "home",
+                "address": "2240 Calle De Luna, Santa Clara"
+            }
+        }
+        
+        return user_context
 
     def sign_message(self, message: str) -> str:
         """Sign a message using the host agent's private key.

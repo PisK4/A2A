@@ -1,6 +1,6 @@
 import json
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional, List, Dict
 
 from google.adk.agents.llm_agent import LlmAgent
@@ -111,9 +111,9 @@ def create_order_form(
     Args:
         restaurant (str, optional): Restaurant name
         items (str, optional): Food items to order
-        delivery_time (str, optional): Requested delivery time
+        delivery_time (str, optional): Requested delivery time (defaults to 30 minutes from now)
         delivery_address (str, optional): Delivery address
-        special_instructions (str, optional): Special instructions for the order
+        special_instructions (str, optional): Special instructions for the order (defaults to "没有")
         
     Returns:
         dict[str, Any]: A dictionary containing the order form data
@@ -123,13 +123,23 @@ def create_order_form(
     
     current_date = datetime.now().strftime("%Y-%m-%d")
     
+    # Set default delivery time to 30 minutes from now if not provided
+    if not delivery_time:
+        now = datetime.now()
+        future_time = now + timedelta(minutes=30)
+        delivery_time = future_time.strftime("%H:%M")
+    
+    # Set default special instructions to "none" if not provided
+    if special_instructions is None:
+        special_instructions = "none"
+    
     return {
         'order_id': order_id,
         'restaurant': '<restaurant name>' if not restaurant else restaurant,
         'items': '<food items>' if not items else items,
-        'delivery_time': '<delivery time>' if not delivery_time else delivery_time,
+        'delivery_time': delivery_time,
         'delivery_address': '<delivery address>' if not delivery_address else delivery_address,
-        'special_instructions': '<special instructions>' if not special_instructions else special_instructions,
+        'special_instructions': special_instructions,
         'date': current_date,
     }
 
@@ -262,22 +272,15 @@ def place_order(order_id: str) -> dict[str, Any]:
     # Simulate delivery time (30-60 minutes from now)
     delivery_time = datetime.now()
     delivery_minutes = random.randint(30, 60)
-    estimated_delivery = (delivery_time.hour % 12 or 12, delivery_time.minute + delivery_minutes)
+    future_time = delivery_time + timedelta(minutes=delivery_minutes)
     
     # Format time as 12-hour with AM/PM
-    if estimated_delivery[1] >= 60:
-        hour = estimated_delivery[0] + estimated_delivery[1] // 60
-        minute = estimated_delivery[1] % 60
-    else:
-        hour = estimated_delivery[0]
-        minute = estimated_delivery[1]
-    
-    am_pm = "AM" if delivery_time.hour < 12 else "PM"
+    formatted_time = future_time.strftime("%I:%M %p")
     
     return {
         'order_id': order_id,
         'status': 'confirmed',
-        'estimated_delivery': f"{hour}:{minute:02d} {am_pm}",
+        'estimated_delivery': formatted_time,
         'tracking_url': f"https://fooddelivery.example.com/track/{order_id}",
     }
 
@@ -318,19 +321,14 @@ class FoodOrderingAgent(AgentWithTaskManager):
 3. 询问用户是否需要订餐或预订
 
 当用户想要订购外卖时：
-1. 使用create_order_form()创建订单表单，包含以下信息：
+1. 使用create_order_form()创建订单表单，只需要提供以下必要信息：
    - 餐厅名称
    - 订购的食物项目
-   - 送达时间
    - 送达地址
-   - 特殊要求（如有）
-2. 用return_order_form()将表单发送给用户填写
-3. 收到用户填写完整的表单后，检查是否包含所有必要信息：
-   - 餐厅名称
-   - 食物项目
-   - 送达地址
-4. 如果信息不完整，请用return_order_form()再次发送表单，并指出缺少的字段
-5. 如果信息完整，使用place_order()处理订单
+2. 送达时间默认为30分钟后，特殊要求默认为"没有"，无需特别询问这些信息
+3. 用return_order_form()将表单发送给用户填写
+4. 收到用户填写的表单后，检查是否包含所有必要信息
+5. 如果信息完整，直接使用place_order()处理订单
 6. 在响应中包括订单ID、订单状态和预计送达时间
 
 当用户想要预订餐厅时：
