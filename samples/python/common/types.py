@@ -349,6 +349,7 @@ class AgentCard(BaseModel):
     defaultInputModes: list[str] = ['text']
     defaultOutputModes: list[str] = ['text']
     skills: list[AgentSkill]
+    metadata: dict[str, Any] | None = None
 
 
 class A2AClientError(Exception):

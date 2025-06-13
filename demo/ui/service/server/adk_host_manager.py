@@ -298,9 +298,9 @@ class ADKHostManager(ApplicationManager):
                 role='agent',
                 metadata=metadata,
             )
-        elif task.status and task.status.message:
+        elif task and task.status and task.status.message:
             content = task.status.message
-        elif task.artifacts:
+        elif task and task.artifacts:
             parts = []
             for a in task.artifacts:
                 parts.extend(a.parts)
@@ -310,8 +310,9 @@ class ADKHostManager(ApplicationManager):
                 metadata=metadata,
             )
         else:
+            state_text = str(task.status.state) if task and task.status else "Unknown"
             content = Message(
-                parts=[TextPart(text=str(task.status.state))],
+                parts=[TextPart(text=state_text)],
                 role='agent',
                 metadata=metadata,
             )

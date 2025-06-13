@@ -5,10 +5,9 @@ from collections.abc import AsyncIterable
 from typing import Any
 
 from pydantic import ValidationError
-from sse_starlette.sse import EventSourceResponse
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from common.server.task_manager import TaskManager
 from common.types import (
@@ -123,14 +122,32 @@ class A2AServer:
 
     def _create_response(
         self, result: Any
-    ) -> JSONResponse | EventSourceResponse:
+    ) -> JSONResponse | StreamingResponse:
         if isinstance(result, AsyncIterable):
 
-            async def event_generator(result) -> AsyncIterable[dict[str, str]]:
-                async for item in result:
-                    yield {'data': item.model_dump_json(exclude_none=True)}
+            async def sse_stream_generator():
+                """Generate Server-Sent Events format manually"""
+                try:
+                    async for item in result:
+                        data = item.model_dump_json(exclude_none=True)
+                        # Manually format SSE data
+                        yield f"data: {data}\n\n"
+                except Exception as e:
+                    logger.error(f"Error in SSE stream: {e}")
+                    # Send error as SSE event
+                    error_data = {"error": str(e)}
+                    yield f"data: {json.dumps(error_data)}\n\n"
 
-            return EventSourceResponse(event_generator(result))
+            return StreamingResponse(
+                sse_stream_generator(),
+                media_type='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Cache-Control'
+                }
+            )
         if isinstance(result, JSONRPCResponse):
             return JSONResponse(result.model_dump(exclude_none=True))
         logger.error(f'Unexpected result type: {type(result)}')

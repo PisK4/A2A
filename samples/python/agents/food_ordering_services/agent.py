@@ -308,7 +308,7 @@ class FoodOrderingAgent(AgentWithTaskManager):
         """Builds the LLM agent for the food ordering service."""
         return LlmAgent(
             model='gemini-2.0-flash-001',
-            name='food_ordering_agent',
+            name='bay_area_food_ordering_agent_v1',
             description=(
                 'This agent helps Bay Area users order food delivery or make restaurant reservations.'
             ),

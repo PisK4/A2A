@@ -2,6 +2,7 @@ import logging
 import os
 
 import click
+from eth_account import Account
 
 from agent import FoodOrderingAgent
 from common.server import A2AServer
@@ -25,7 +26,8 @@ logger = logging.getLogger(__name__)
 @click.option('--host', default='localhost')
 @click.option('--port', default=10002)
 @click.option('--verify-signatures', is_flag=True, default=True, help='Enable signature verification')
-def main(host, port, verify_signatures):
+@click.option('--ethereum-address', default=None, help='Ethereum address for Remote Agent (optional)')
+def main(host, port, verify_signatures, ethereum_address):
     try:
         # Check for API key only if Vertex AI is not configured
         if not os.getenv('GOOGLE_GENAI_USE_VERTEXAI') == 'TRUE':
@@ -34,9 +36,23 @@ def main(host, port, verify_signatures):
                     'GOOGLE_API_KEY environment variable not set and GOOGLE_GENAI_USE_VERTEXAI is not TRUE.'
                 )
 
-        capabilities = AgentCapabilities(streaming=True)
+        # If ethereum_address is not provided, try to get it from ETH_PRIVATE_KEY environment variable
+        if not ethereum_address:
+            eth_private_key = os.environ.get('ETH_PRIVATE_KEY')
+            if eth_private_key:
+                try:
+                    ethereum_address = Account.from_key(eth_private_key).address
+                    logger.info(f"Generated ethereum_address from ETH_PRIVATE_KEY: {ethereum_address}")
+                except Exception as e:
+                    logger.error(f"Error generating Ethereum address from private key: {e}")
+                    ethereum_address = '0x123456789abcdef0123456789abcdef012345678'  # Default address
+            else:
+                logger.warning("ETH_PRIVATE_KEY not set, using default ethereum_address")
+                ethereum_address = '0x123456789abcdef0123456789abcdef012345678'  # Default address
+
+        capabilities = AgentCapabilities(streaming=False)
         
-        # 定义代理技能
+        # Define agent skills
         restaurant_skill = AgentSkill(
             id='restaurant_search',
             name='Restaurant Search Tool',
@@ -73,23 +89,32 @@ def main(host, port, verify_signatures):
             ],
         )
         
+        # Add ethereum_address to AgentCard metadata
         agent_card = AgentCard(
-            name='Bay Area Food Ordering',
+            name='Food Ordering Agent',
             description='This agent helps Bay Area users find restaurants, order food delivery, or make restaurant reservations.',
-            url=f'http://{host}:{port}/',
+            url=f'http://localhost:{port}/',
             version='1.0.0',
             defaultInputModes=FoodOrderingAgent.SUPPORTED_CONTENT_TYPES,
             defaultOutputModes=FoodOrderingAgent.SUPPORTED_CONTENT_TYPES,
             capabilities=capabilities,
             skills=[restaurant_skill, delivery_skill, reservation_skill],
+            metadata={"ethereum_address": ethereum_address}  # Add ethereum address
         )
         
-        # Initialize the task manager with signature verification
+        # Initialize the task manager with signature verification and save ethereum_address
         logger.info(f"Initializing AgentTaskManager with signature verification: {verify_signatures}")
+        agent = FoodOrderingAgent()
         task_manager = AgentTaskManager(
             agent=FoodOrderingAgent(),
             verify_signatures=verify_signatures
         )
+        # Set agent ethereum address
+        task_manager.agent_address = ethereum_address
+        logger.info(f"Agent ethereum address set to: {ethereum_address}")
+        
+        # Also set it as environment variable for easier access
+        os.environ['AGENT_ETH_ADDRESS'] = ethereum_address
         
         server = A2AServer(
             agent_card=agent_card,

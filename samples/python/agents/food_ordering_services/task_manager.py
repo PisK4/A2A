@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable
@@ -123,10 +124,14 @@ class AgentWithTaskManager(ABC):
 
 
 class AgentTaskManager(InMemoryTaskManager):
-    def __init__(self, agent: AgentWithTaskManager, verify_signatures: bool = True):
+    def __init__(self, agent: AgentWithTaskManager, verify_signatures: bool = True, verify_blockchain: bool = True):
         super().__init__()
         self.agent = agent
         self.verify_signatures = verify_signatures
+        self.verify_blockchain = verify_blockchain
+        
+        # 获取从AgentCard中设置的以太坊地址
+        self.agent_address = None
 
     async def _validate_signature(self, task_send_params: TaskSendParams) -> tuple[bool, str]:
         """Validate the signature from the Host Agent.
@@ -183,10 +188,110 @@ class AgentTaskManager(InMemoryTaskManager):
         except Exception as e:
             logger.error(f"Error validating signature: {e}")
             return False, f"Error validating signature: {e}"
+    
+    async def _validate_blockchain_confirmation(self, task_send_params: TaskSendParams) -> tuple[bool, str]:
+        """Validate blockchain task confirmation.
+        
+        Args:
+            task_send_params: Task parameters containing blockchain transaction hash.
+            
+        Returns:
+            A tuple of (is_valid, error_message).
+        """
+        try:
+            # Skip validation if disabled
+            if not self.verify_blockchain:
+                return True, ""
+                
+            # Check if blockchain data exists in metadata
+            if (not task_send_params.message or 
+                not task_send_params.message.metadata or
+                'blockchain' not in task_send_params.message.metadata):
+                return True, "No blockchain confirmation data, skipping validation"
+                
+            # Extract transaction hash - adapt to new metadata format
+            blockchain_data = task_send_params.message.metadata.get('blockchain', {})
+            confirm_task_data = blockchain_data.get('confirmTask', {})
+            tx_hash = confirm_task_data.get('tx_hash')
+            
+            if not tx_hash:
+                return False, "Missing blockchain transaction hash"
+                
+            # Get session ID and convert to on-chain UUID
+            session_id = task_send_params.sessionId
+            task_uuid = int(session_id.replace('-', ''), 16) % (2**256)
+                
+            # Connect to blockchain
+            w3 = Web3(Web3.HTTPProvider(os.environ.get('CHAIN_RPC', "http://127.0.0.1:8545/")))
+            if not w3.is_connected():
+                return False, "Unable to connect to blockchain network"
+                
+            # Hardcoded contract address
+            contract_address = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
+            
+            # Simplified ABI containing only tasks mapping getter function
+            abi = [
+                {
+                    "inputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+                    "name": "tasks",
+                    "outputs": [
+                        {"internalType": "address", "name": "taskAgent", "type": "address"},
+                        {"internalType": "address", "name": "serviceAgent", "type": "address"},
+                        {"internalType": "bool", "name": "isCompleted", "type": "bool"},
+                        {"internalType": "uint256", "name": "createdAt", "type": "uint256"},
+                        {"internalType": "uint256", "name": "lastestCompletedAt", "type": "uint256"},
+                        {"internalType": "uint256", "name": "payAmount", "type": "uint256"}
+                    ],
+                    "stateMutability": "view",
+                    "type": "function"
+                }
+            ]
+            contract = w3.eth.contract(address=contract_address, abi=abi)
+            
+            # Check if agent ethereum address is set
+            if not self.agent_address:
+                # Try to get from environment variable
+                self.agent_address = os.environ.get('AGENT_ETH_ADDRESS')
+                
+                if not self.agent_address:
+                    logger.warning("Agent ethereum address not set, skipping blockchain task validation")
+                    return True, "Blockchain validation skipped due to missing agent address"
+            
+            try:
+                # Get task data from blockchain
+                task_data = contract.functions.tasks(task_uuid).call()
+                
+                # Validate task exists and remote agent address matches
+                service_agent_address = task_data[1]  # serviceAgent field is at index 1
+                
+                if not service_agent_address or service_agent_address == "0x0000000000000000000000000000000000000000":
+                    logger.warning(f"On-chain task UUID {task_uuid} does not exist or is not properly set")
+                    return True, "Blockchain task not found, but allowing task to proceed"
+                    
+                if service_agent_address.lower() != self.agent_address.lower():
+                    return False, f"Task service agent address mismatch. Expected: {self.agent_address}, Got: {service_agent_address}"
+                
+                # Validate transaction status
+                tx_receipt = w3.eth.get_transaction_receipt(tx_hash)
+                if not tx_receipt:
+                    return False, "Unable to get transaction receipt"
+                    
+                if tx_receipt.status != 1:
+                    return False, "Transaction execution failed"
+                    
+            except Exception as e:
+                logger.warning(f"Blockchain task validation failed: {e}, but allowing task to proceed")
+                return True, f"Blockchain validation failed but proceeding: {e}"
+            
+            logger.info(f"Blockchain task confirmation validated successfully, UUID: {task_uuid}")
+            return True, ""
+        except Exception as e:
+            logger.error(f"Error validating blockchain confirmation: {e}")
+            return False, f"Blockchain confirmation validation failed: {e}"
 
     async def _stream_generator(
         self, request: SendTaskStreamingRequest
-    ) -> AsyncIterable[SendTaskStreamingResponse] | JSONRPCResponse:
+    ) -> AsyncIterable[SendTaskStreamingResponse]:
         task_send_params: TaskSendParams = request.params
         query = self._get_user_query(task_send_params)
         try:
@@ -216,43 +321,45 @@ class AgentTaskManager(InMemoryTaskManager):
                         task_state = TaskState.COMPLETED
                         parts = [{'type': 'text', 'text': item['content']}]
                     artifacts = [Artifact(parts=parts, index=0, append=False)]
-            message = Message(role='agent', parts=parts)
-            task_status = TaskStatus(state=task_state, message=message)
-            await self._update_store(
-                task_send_params.id, task_status, artifacts
-            )
-            task_update_event = TaskStatusUpdateEvent(
-                id=task_send_params.id,
-                status=task_status,
-                final=False,
-            )
-            yield SendTaskStreamingResponse(
-                id=request.id, result=task_update_event
-            )
-            # Now yield Artifacts too
-            if artifacts:
-                for artifact in artifacts:
+                
+                message = Message(role='agent', parts=parts)
+                task_status = TaskStatus(state=task_state, message=message)
+                await self._update_store(
+                    task_send_params.id, task_status, artifacts
+                )
+                task_update_event = TaskStatusUpdateEvent(
+                    id=task_send_params.id,
+                    status=task_status,
+                    final=False,
+                )
+                yield SendTaskStreamingResponse(
+                    id=request.id, result=task_update_event
+                )
+                # Now yield Artifacts too
+                if artifacts:
+                    for artifact in artifacts:
+                        yield SendTaskStreamingResponse(
+                            id=request.id,
+                            result=TaskArtifactUpdateEvent(
+                                id=task_send_params.id,
+                                artifact=artifact,
+                            ),
+                        )
+                if is_task_complete:
                     yield SendTaskStreamingResponse(
                         id=request.id,
-                        result=TaskArtifactUpdateEvent(
+                        result=TaskStatusUpdateEvent(
                             id=task_send_params.id,
-                            artifact=artifact,
+                            status=TaskStatus(
+                                state=task_status.state,
+                            ),
+                            final=True,
                         ),
                     )
-            if is_task_complete:
-                yield SendTaskStreamingResponse(
-                    id=request.id,
-                    result=TaskStatusUpdateEvent(
-                        id=task_send_params.id,
-                        status=TaskStatus(
-                            state=task_status.state,
-                        ),
-                        final=True,
-                    ),
-                )
+                    break
         except Exception as e:
             logger.error(f'An error occurred while streaming the response: {e}')
-            yield JSONRPCResponse(
+            yield SendTaskStreamingResponse(
                 id=request.id,
                 error=InternalError(
                     message='An error occurred while streaming the response'
@@ -287,28 +394,57 @@ class AgentTaskManager(InMemoryTaskManager):
                 id=request.id,
                 error=InternalError(message=f"Signature verification failed: {error_message}")
             )
+        
+        # Validate blockchain confirmation
+        is_valid, error_message = await self._validate_blockchain_confirmation(request.params)
+        if not is_valid:
+            logger.warning(f"Blockchain confirmation validation failed: {error_message}")
+            return JSONRPCResponse(
+                id=request.id,
+                error=InternalError(message=f"Blockchain confirmation validation failed: {error_message}")
+            )
             
         await self.upsert_task(request.params)
         return await self._invoke(request)
 
     async def on_send_task_subscribe(
         self, request: SendTaskStreamingRequest
-    ) -> AsyncIterable[SendTaskStreamingResponse] | JSONRPCResponse:
+    ) -> AsyncIterable[SendTaskStreamingResponse]:
         error = self._validate_request(request)
         if error:
-            return error
+            yield SendTaskStreamingResponse(id=request.id, error=error.error)
+            return
             
         # Validate signature
         is_valid, error_message = await self._validate_signature(request.params)
         if not is_valid:
             logger.warning(f"Signature validation failed: {error_message}")
-            return JSONRPCResponse(
+            yield SendTaskStreamingResponse(
                 id=request.id,
                 error=InternalError(message=f"Signature verification failed: {error_message}")
             )
+            return
+        
+        # Validate blockchain confirmation
+        is_valid, error_message = await self._validate_blockchain_confirmation(request.params)
+        if not is_valid:
+            logger.warning(f"Blockchain confirmation validation failed: {error_message}")
+            yield SendTaskStreamingResponse(
+                id=request.id,
+                error=InternalError(message=f"Blockchain confirmation validation failed: {error_message}")
+            )
+            return
             
         await self.upsert_task(request.params)
-        return self._stream_generator(request)
+        try:
+            async for response in self._stream_generator(request):
+                yield response
+        except Exception as e:
+            logger.error(f"Error in stream generator: {e}")
+            yield SendTaskStreamingResponse(
+                id=request.id,
+                error=InternalError(message=f"Stream generation error: {e}")
+            )
 
     async def _update_store(
         self, task_id: str, status: TaskStatus, artifacts: list[Artifact]

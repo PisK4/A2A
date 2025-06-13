@@ -89,6 +89,7 @@ class HostAgent:
             tools=[
                 self.list_remote_agents,
                 self.send_task,
+                self.confirm_task,
                 self.get_user_context,
             ],
         )
@@ -105,8 +106,26 @@ can use to delegate the task.
 and location, which will help you make better decisions.
 
 Execution:
-- For actionable tasks, you can use `send_task` to assign tasks to remote agents to perform.
-Be sure to include the remote agent name when you respond to the user.
+- For IMPORTANT TASKS that involve real-world actions, transactions, or commitments, 
+  use `confirm_task` to provide blockchain-level verification and security. This includes:
+  * Food ordering and delivery requests
+  * Restaurant reservations
+  * Payment processing
+  * Booking confirmations
+  * Any task that involves spending money or making commitments
+  
+- For INFORMATIONAL QUERIES and simple interactions, use `send_task`:
+  * Searching for restaurants or information
+  * Getting recommendations
+  * Asking questions
+  * General conversation
+
+- PRIORITIZE `confirm_task` for actionable requests. When a user makes a clear request
+  like "order food", "book a table", or "make a reservation", use `confirm_task` 
+  to ensure the task is properly verified on the blockchain.
+
+- Be sure to include the remote agent name when you respond to the user.
+
 - When the request is related to food or dining, first check the user context with
 `get_user_context` to understand their preferences and current situation.
 
@@ -201,6 +220,197 @@ Current agent: {current_agent['active_agent']}
         except Exception as e:
             print(f"Error signing message: {e}")
             return None
+
+    async def confirm_task(
+        self, agent_name: str, message: str, tool_context: ToolContext
+    ):
+        """Interacts with blockchain to confirm tasks and sends them to remote agents.
+        
+        This method is similar to send_task but registers task confirmation on blockchain.
+        
+        Args:
+          agent_name: The name of the remote agent
+          message: The task message to send to the agent
+          tool_context: The tool context this method runs in
+        
+        Returns:
+          A dictionary of JSON data including blockchain confirmation
+        """
+        if agent_name not in self.remote_agent_connections:
+            raise ValueError(f'Agent {agent_name} not found')
+            
+        # Set state and get necessary information
+        state = tool_context.state
+        state['agent'] = agent_name
+        card = self.cards[agent_name]
+        client = self.remote_agent_connections[agent_name]
+        if not client:
+            raise ValueError(f'Client not available for {agent_name}')
+            
+        # Get or create task ID and session ID
+        if 'task_id' in state:
+            taskId = state['task_id']
+        else:
+            taskId = str(uuid.uuid4())
+        sessionId = state['session_id']
+        
+        # Get remote agent's ethereum address
+        remote_agent_address = None
+        if hasattr(card, 'metadata') and card.metadata:
+            remote_agent_address = card.metadata.get('ethereum_address')
+            
+        # If not found in card metadata, try environment variables
+        if not remote_agent_address:
+            remote_agent_address = os.environ.get('REMOTE_AGENT_ETH_ADDRESS', "0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
+            
+        if not remote_agent_address:
+            raise ValueError(f"Could not determine ethereum address for remote agent {agent_name}")
+            
+        # Initialize Web3 connection
+        try:
+            w3 = Web3(Web3.HTTPProvider(os.environ.get('CHAIN_RPC', "http://127.0.0.1:8545/")))
+            if not w3.is_connected():
+                raise ConnectionError("Unable to connect to blockchain network")
+        except Exception as e:
+            print(f"Blockchain connection error: {e}")
+            print(f"Falling back to regular send_task without blockchain confirmation")
+            # Fallback to regular send_task when blockchain is not available
+            return await self.send_task(agent_name, message, tool_context)
+            
+        # Hardcoded contract address
+        contract_address = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
+        
+        # Contract ABI with confirmTask function
+        abi = [{"inputs":[{"name":"uuid","type":"uint256"},{"name":"remoteAgent","type":"address"}],"name":"confirmTask","outputs":[],"stateMutability":"payable","type":"function"}]
+        contract = w3.eth.contract(address=contract_address, abi=abi)
+        
+        # Convert sessionId to on-chain task UUID
+        task_uuid = int(sessionId.replace('-', ''), 16) % (2**256)
+        
+        # Cannot proceed without private key
+        if not self.private_key:
+            raise ValueError("Host Agent has no private key configured, cannot perform blockchain confirmation")
+            
+        try:
+            # Create account instance
+            account = Account.from_key(self.private_key)
+            
+            # Build transaction
+            tx = contract.functions.confirmTask(
+                task_uuid,
+                remote_agent_address
+            ).build_transaction({
+                'from': account.address,
+                'value': 0,  # Can be modified to send funds
+                'gas': 200000,
+                'gasPrice': w3.eth.gas_price,
+                'nonce': w3.eth.get_transaction_count(account.address)
+            })
+            
+            # Sign transaction
+            signed_tx = w3.eth.account.sign_transaction(tx, private_key=self.private_key)
+            
+            # Send transaction
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            print(f"Blockchain transaction sent: {tx_hash.hex()}")
+            
+            # Wait for transaction confirmation
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+            tx_hash_hex = receipt.transactionHash.hex()
+            print(f"Blockchain transaction confirmed: {tx_hash_hex}")
+            
+        except Exception as e:
+            print(f"Blockchain transaction error: {e}")
+            print(f"Falling back to regular send_task without blockchain confirmation")
+            # Fallback to regular send_task when blockchain transaction fails
+            return await self.send_task(agent_name, message, tool_context)
+        
+        # Prepare message metadata
+        messageId = ''
+        metadata = {}
+        if 'input_message_metadata' in state:
+            metadata.update(**state['input_message_metadata'])
+            if 'message_id' in state['input_message_metadata']:
+                messageId = state['input_message_metadata']['message_id']
+        if not messageId:
+            messageId = str(uuid.uuid4())
+            
+        # Add basic metadata
+        metadata.update(conversation_id=sessionId, message_id=messageId)
+        
+        # Add signature information to metadata
+        signature = None
+        if self.eth_address:
+            message_to_sign = f"{self.eth_address}{sessionId}"
+            signature = self.sign_message(message_to_sign)
+            if signature:
+                metadata["auth"] = {
+                    "address": self.eth_address,
+                    "signature": signature
+                }
+        
+        # Add blockchain confirmation information to metadata
+        metadata["blockchain"] = {
+            "confirmTask": {
+                "tx_hash": tx_hash_hex
+            }
+        }
+        
+        # Create task request
+        request: TaskSendParams = TaskSendParams(
+            id=taskId,
+            sessionId=sessionId,
+            message=Message(
+                role='user',
+                parts=[TextPart(text=message)],
+                metadata=metadata,
+            ),
+            acceptedOutputModes=['text', 'text/plain', 'image/png'],
+            metadata={'conversation_id': sessionId},
+        )
+        
+        # Send task
+        task = await client.send_task(request, self.task_callback)
+        
+        # Update session state
+        state['session_active'] = task.status.state not in [
+            TaskState.COMPLETED,
+            TaskState.CANCELED,
+            TaskState.FAILED,
+            TaskState.UNKNOWN,
+        ]
+        
+        # Handle task status
+        if task.status.state == TaskState.INPUT_REQUIRED:
+            tool_context.actions.skip_summarization = True
+            tool_context.actions.escalate = True
+        elif task.status.state == TaskState.CANCELED:
+            raise ValueError(f'Agent {agent_name} task {task.id} is cancelled')
+        elif task.status.state == TaskState.FAILED:
+            raise ValueError(f'Agent {agent_name} task {task.id} failed')
+            
+        # Process response
+        response = []
+        if task.status.message:
+            response.extend(
+                convert_parts(task.status.message.parts, tool_context)
+            )
+        if task.artifacts:
+            for artifact in task.artifacts:
+                response.extend(convert_parts(artifact.parts, tool_context))
+                
+        # Return result with blockchain confirmation information
+        response.append({
+            "blockchain_confirmation": {
+                "confirmTask": {
+                    "transaction_hash": tx_hash_hex,
+                    "contract_address": contract_address,
+                    "task_uuid": task_uuid
+                }
+            }
+        })
+        
+        return response
 
     async def send_task(
         self, agent_name: str, message: str, tool_context: ToolContext
