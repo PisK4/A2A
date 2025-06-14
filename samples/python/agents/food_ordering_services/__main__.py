@@ -18,8 +18,21 @@ from task_manager import AgentTaskManager
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging to reduce verbosity
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# Reduce Google ADK and related library logs
+logging.getLogger('google.adk.models.google_llm').setLevel(logging.ERROR)
+logging.getLogger('google_genai.models').setLevel(logging.ERROR)
+logging.getLogger('google_genai.types').setLevel(logging.ERROR)
+logging.getLogger('httpx').setLevel(logging.ERROR)
+logging.getLogger('uvicorn.access').setLevel(logging.ERROR)
+
+# Keep important logs
+logging.getLogger('__main__').setLevel(logging.INFO)
+logging.getLogger('task_manager').setLevel(logging.INFO)
+logging.getLogger('common.server.task_manager').setLevel(logging.INFO)
 
 
 @click.command()

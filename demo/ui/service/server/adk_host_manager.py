@@ -65,9 +65,15 @@ class ADKHostManager(ApplicationManager):
         # Get the Ethereum private key from environment variable
         eth_private_key = os.environ.get('ETH_PRIVATE_KEY')
         
-        # Initialize HostAgent with private key
+        # Get default remote agents from environment variable
+        default_agents = os.environ.get('DEFAULT_REMOTE_AGENTS', 'http://localhost:10003')
+        remote_agent_addresses = [addr.strip() for addr in default_agents.split(',') if addr.strip()]
+        
+        print(f"Initializing Host Agent with default remote agents: {remote_agent_addresses}")
+        
+        # Initialize HostAgent with private key and default remote agents
         self._host_agent = HostAgent(
-            remote_agent_addresses=[], 
+            remote_agent_addresses=remote_agent_addresses, 
             task_callback=self.task_callback,
             private_key=eth_private_key
         )

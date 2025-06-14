@@ -61,7 +61,14 @@ class A2AServer:
 
         import uvicorn
 
-        uvicorn.run(self.app, host=self.host, port=self.port)
+        # Configure uvicorn with reduced logging
+        uvicorn.run(
+            self.app, 
+            host=self.host, 
+            port=self.port,
+            log_level="error",  # Reduce uvicorn logs
+            access_log=False    # Disable access logs
+        )
 
     def _get_agent_card(self, request: Request) -> JSONResponse:
         return JSONResponse(self.agent_card.model_dump(exclude_none=True))
