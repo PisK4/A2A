@@ -1,5 +1,7 @@
 import json
 import random
+import os
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional, List, Dict
 
@@ -10,10 +12,16 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.tool_context import ToolContext
 from task_manager import AgentWithTaskManager
+# Import Ethereum related libraries
+from web3 import Web3
+from eth_account import Account
 
 
 # Local cache of created order_ids for demo purposes.
 order_ids = set()
+
+# Global reference to the current agent instance for tool functions
+_current_agent_instance = None
 
 # Sample restaurant database for Bay Area
 RESTAURANTS = {
@@ -254,11 +262,12 @@ def make_reservation(
     }
 
 
-def place_order(order_id: str) -> dict[str, Any]:
+def place_order(order_id: str, tool_context: ToolContext) -> dict[str, Any]:
     """Place a food order with the given order_id.
     
     Args:
         order_id (str): The ID of the order to place
+        tool_context (ToolContext): The tool context for accessing session information
         
     Returns:
         dict[str, Any]: Order status and estimated delivery time
@@ -277,12 +286,120 @@ def place_order(order_id: str) -> dict[str, Any]:
     # Format time as 12-hour with AM/PM
     formatted_time = future_time.strftime("%I:%M %p")
     
-    return {
+    # Prepare basic order response
+    order_response = {
         'order_id': order_id,
         'status': 'confirmed',
         'estimated_delivery': formatted_time,
         'tracking_url': f"https://fooddelivery.example.com/track/{order_id}",
     }
+    
+    # Attempt blockchain interaction
+    try:
+        blockchain_result = _complete_task_on_blockchain(tool_context)
+        if blockchain_result:
+            order_response['blockchain_completion'] = blockchain_result
+    except Exception as e:
+        # Log error but don't fail the order
+        print(f"Blockchain interaction failed: {e}")
+        order_response['blockchain_completion'] = {
+            'status': 'failed',
+            'error': str(e)
+        }
+    
+    return order_response
+
+
+def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[dict[str, Any]]:
+    """Complete the task on blockchain by calling completeTask function.
+    
+    Args:
+        tool_context: The tool context containing session information
+        
+    Returns:
+        dict containing blockchain transaction details or None if failed
+    """
+    try:
+        # Get session_id from global agent instance
+        global _current_agent_instance
+        session_id = None
+        
+        if _current_agent_instance and hasattr(_current_agent_instance, '_current_session_id'):
+            session_id = _current_agent_instance._current_session_id
+            print(f"DEBUG: Found session_id from global agent instance: {session_id}")
+        
+        if not session_id:
+            print("No session_id found in global agent instance")
+            return None
+            
+        # Convert sessionId to on-chain task UUID
+        task_uuid = int(session_id.replace('-', ''), 16) % (2**256)
+        
+        # Get agent's private key from environment (prefer Food Agent specific key)
+        agent_private_key = os.environ.get('FOOD_AGENT_ETH_PRIVATE_KEY') or os.environ.get('ETH_PRIVATE_KEY')
+        if not agent_private_key:
+            print("No FOOD_AGENT_ETH_PRIVATE_KEY or ETH_PRIVATE_KEY found in environment")
+            return None
+        
+        # Log which key is being used for debugging
+        key_source = "FOOD_AGENT_ETH_PRIVATE_KEY" if os.environ.get('FOOD_AGENT_ETH_PRIVATE_KEY') else "ETH_PRIVATE_KEY"
+        print(f"Using private key from: {key_source}")
+            
+        # Initialize Web3 connection
+        w3 = Web3(Web3.HTTPProvider(os.environ.get('CHAIN_RPC', "http://127.0.0.1:8545/")))
+        if not w3.is_connected():
+            raise ConnectionError("Unable to connect to blockchain network")
+            
+        # Contract configuration
+        contract_address = os.environ.get('PIN_AI_NETWORK_TASK_CONTRACT', "0x5FbDB2315678afecb367f032d93F642f64180aa3")
+        
+        # Contract ABI with completeTask function
+        abi = [
+            {
+                "inputs": [{"name": "uuid", "type": "uint256"}],
+                "name": "completeTask",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            }
+        ]
+        contract = w3.eth.contract(address=contract_address, abi=abi)
+        
+        # Create account instance
+        account = Account.from_key(agent_private_key)
+        
+        # Build transaction
+        tx = contract.functions.completeTask(task_uuid).build_transaction({
+            'from': account.address,
+            'gas': 300000,
+            'gasPrice': w3.eth.gas_price,
+            'nonce': w3.eth.get_transaction_count(account.address)
+        })
+        
+        # Sign transaction
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=agent_private_key)
+        
+        # Send transaction
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        print(f"Blockchain completeTask transaction sent: {tx_hash.hex()}")
+        
+        # Wait for transaction confirmation
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        tx_hash_hex = receipt.transactionHash.hex()
+        print(f"Blockchain completeTask transaction confirmed: {tx_hash_hex}")
+        
+        return {
+            'status': 'completed',
+            'transaction_hash': tx_hash_hex,
+            'contract_address': contract_address,
+            'task_uuid': task_uuid,
+            'block_number': receipt.blockNumber,
+            'gas_used': receipt.gasUsed
+        }
+        
+    except Exception as e:
+        print(f"Error completing task on blockchain: {e}")
+        raise e
 
 
 class FoodOrderingAgent(AgentWithTaskManager):
@@ -291,6 +408,7 @@ class FoodOrderingAgent(AgentWithTaskManager):
     SUPPORTED_CONTENT_TYPES = ['text', 'text/plain']
 
     def __init__(self):
+        global _current_agent_instance
         self._agent = self._build_agent()
         self._user_id = 'remote_agent'
         self._runner = Runner(
@@ -300,6 +418,10 @@ class FoodOrderingAgent(AgentWithTaskManager):
             session_service=InMemorySessionService(),
             memory_service=InMemoryMemoryService(),
         )
+        # Store current session_id for use in tool functions
+        self._current_session_id = None
+        # Set global reference
+        _current_agent_instance = self
 
     def get_processing_message(self) -> str:
         return '正在处理您的订餐请求...'
@@ -326,10 +448,9 @@ class FoodOrderingAgent(AgentWithTaskManager):
    - 订购的食物项目
    - 送达地址
 2. 送达时间默认为30分钟后，特殊要求默认为"没有"，无需特别询问这些信息
-3. 用return_order_form()将表单发送给用户填写
-4. 收到用户填写的表单后，检查是否包含所有必要信息
-5. 如果信息完整，直接使用place_order()处理订单
-6. 在响应中包括订单ID、订单状态和预计送达时间
+3. 如果用户提供了完整的订单信息（餐厅、食物、地址），直接使用 place_order()处理订单
+4. 只有在信息不完整时才使用return_order_form()将表单发送给用户填写
+5. 在响应中包括订单ID、订单状态和预计送达时间
 
 当用户想要预订餐厅时：
 1. 询问并收集以下信息：

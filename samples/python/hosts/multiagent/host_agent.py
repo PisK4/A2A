@@ -137,6 +137,11 @@ and helpful. Don't ask for information that is already available in the user con
 For example, instead of asking which restaurant, suggest their favorite restaurant
 from the context.
 
+IMPORTANT: When delegating food orders to the Food Ordering Agent, always include the user's 
+delivery address from the user context in your message. For example: "Please order Van Damme 
+pizza from Za Pizza for delivery to 2240 Calle De Luna, Santa Clara" instead of just 
+"I want to order Van Damme pizza from Za Pizza".
+
 Please rely on tools to address the request, and don't make up the response. If you are not sure, please ask the user for more details.
 Focus on the most recent parts of the conversation primarily.
 
@@ -278,7 +283,7 @@ Current agent: {current_agent['active_agent']}
             return await self.send_task(agent_name, message, tool_context)
             
         # Hardcoded contract address
-        contract_address = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
+        contract_address = os.environ.get('PIN_AI_NETWORK_TASK_CONTRACT', "0x5FbDB2315678afecb367f032d93F642f64180aa3")
         
         # Contract ABI with confirmTask function
         abi = [{"inputs":[{"name":"uuid","type":"uint256"},{"name":"remoteAgent","type":"address"}],"name":"confirmTask","outputs":[],"stateMutability":"payable","type":"function"}]
@@ -291,6 +296,8 @@ Current agent: {current_agent['active_agent']}
         if not self.private_key:
             raise ValueError("Host Agent has no private key configured, cannot perform blockchain confirmation")
             
+        # default 0.001 ETH (convert to integer)
+        bounty = int(os.environ.get('PIN_AI_NETWORK_TASK_BOUNTY', "1000000000000000"))
         try:
             # Create account instance
             account = Account.from_key(self.private_key)
@@ -301,8 +308,8 @@ Current agent: {current_agent['active_agent']}
                 remote_agent_address
             ).build_transaction({
                 'from': account.address,
-                'value': 0,  # Can be modified to send funds
-                'gas': 200000,
+                'value': bounty,  # Send funds as integer
+                'gas': 500000,
                 'gasPrice': w3.eth.gas_price,
                 'nonce': w3.eth.get_transaction_count(account.address)
             })

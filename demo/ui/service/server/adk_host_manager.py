@@ -172,6 +172,16 @@ class ADKHostManager(ApplicationManager):
         session = self._session_service.get_session(
             app_name='A2A', user_id='test_user', session_id=conversation_id
         )
+        
+        # Create session if it doesn't exist
+        if session is None:
+            session = self._session_service.create_session(
+                app_name='A2A', 
+                user_id='test_user', 
+                session_id=conversation_id,
+                state={}  # Initialize with empty state
+            )
+        
         # Update state must happen in the event
         state_update = {
             'input_message_metadata': message.metadata,
@@ -563,7 +573,26 @@ class ADKHostManager(ApplicationManager):
     ) -> list[Part]:
         parts = []
         try:
-            for p in part.function_response.response['result']:
+            # Check if response has 'result' key
+            if not hasattr(part.function_response, 'response') or not part.function_response.response:
+                parts.append(DataPart(data=part.function_response.model_dump()))
+                return parts
+                
+            response_data = part.function_response.response
+            
+            # Handle different response formats
+            if isinstance(response_data, dict) and 'result' in response_data:
+                result = response_data['result']
+            else:
+                result = response_data
+            
+            # Handle result as list or single item
+            if isinstance(result, list):
+                items = result
+            else:
+                items = [result]
+                
+            for p in items:
                 if isinstance(p, str):
                     parts.append(TextPart(text=p))
                 elif isinstance(p, dict):
@@ -597,7 +626,9 @@ class ADKHostManager(ApplicationManager):
                 else:
                     parts.append(TextPart(text=json.dumps(p)))
         except Exception as e:
-            print("Couldn't convert to messages:", e)
+            print(f"Error converting function response to messages: {e}")
+            print(f"Function response data: {part.function_response.model_dump()}")
+            # Fallback: convert entire response to data part
             parts.append(DataPart(data=part.function_response.model_dump()))
         return parts
 

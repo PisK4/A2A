@@ -42,6 +42,10 @@ class AgentWithTaskManager(ABC):
         pass
 
     def invoke(self, query, session_id) -> str:
+        # Store session_id for use in tool functions
+        if hasattr(self, '_current_session_id'):
+            self._current_session_id = session_id
+        
         session = self._runner.session_service.get_session(
             app_name=self._agent.name,
             user_id=self._user_id,
@@ -69,6 +73,10 @@ class AgentWithTaskManager(ABC):
         return '\n'.join([p.text for p in events[-1].content.parts if p.text])
 
     async def stream(self, query, session_id) -> AsyncIterable[dict[str, Any]]:
+        # Store session_id for use in tool functions
+        if hasattr(self, '_current_session_id'):
+            self._current_session_id = session_id
+            
         session = self._runner.session_service.get_session(
             app_name=self._agent.name,
             user_id=self._user_id,
@@ -227,7 +235,7 @@ class AgentTaskManager(InMemoryTaskManager):
                 return False, "Unable to connect to blockchain network"
                 
             # Hardcoded contract address
-            contract_address = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
+            contract_address = os.environ.get('PIN_AI_NETWORK_TASK_CONTRACT', "0x5FbDB2315678afecb367f032d93F642f64180aa3")
             
             # Simplified ABI containing only tasks mapping getter function
             abi = [
