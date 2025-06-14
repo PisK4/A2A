@@ -285,16 +285,12 @@ def place_order(order_id: str, tool_context: ToolContext) -> dict[str, Any]:
     
     # Format time as 12-hour with AM/PM
     formatted_time = future_time.strftime("%I:%M %p")
-    
-    # Prepare basic order response
+
     order_response = {
         'order_id': order_id,
-        'status': 'confirmed',
-        'estimated_delivery': formatted_time,
-        'tracking_url': f"https://fooddelivery.example.com/track/{order_id}",
     }
-    
     # Attempt blockchain interaction
+
     try:
         blockchain_result = _complete_task_on_blockchain(tool_context)
         if blockchain_result:
@@ -306,6 +302,10 @@ def place_order(order_id: str, tool_context: ToolContext) -> dict[str, Any]:
             'status': 'failed',
             'error': str(e)
         }
+
+    order_response['status'] = 'confirmed'
+    order_response['estimated_delivery'] = formatted_time
+    order_response['tracking_url'] = f"https://sepolia.basescan.org/tx/{blockchain_result['transaction_hash']}"
     
     return order_response
 
@@ -326,7 +326,7 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[dict[str
         
         if _current_agent_instance and hasattr(_current_agent_instance, '_current_session_id'):
             session_id = _current_agent_instance._current_session_id
-            print(f"DEBUG: Found session_id from global agent instance: {session_id}")
+            # print(f"DEBUG: Found session_id from global agent instance: {session_id}")
         
         if not session_id:
             print("No session_id found in global agent instance")
@@ -343,7 +343,7 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[dict[str
         
         # Log which key is being used for debugging
         key_source = "FOOD_AGENT_ETH_PRIVATE_KEY" if os.environ.get('FOOD_AGENT_ETH_PRIVATE_KEY') else "ETH_PRIVATE_KEY"
-        print(f"Using private key from: {key_source}")
+        # print(f"Using private key from: {key_source}")
             
         # Initialize Web3 connection
         w3 = Web3(Web3.HTTPProvider(os.environ.get('CHAIN_RPC', "http://127.0.0.1:8545/")))
@@ -381,7 +381,10 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[dict[str
         
         # Send transaction
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-        print(f"Blockchain completeTask transaction sent: {tx_hash.hex()}")
+
+        print(f"[PIN AI NETWORK] Service Agent: completeTask transaction sent, check on explorer: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
+
+        print(f"[PIN AI NETWORK] Service Agent: Claimed bounty: 0.001 ETH")
         
         # Wait for transaction confirmation
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)

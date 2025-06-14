@@ -221,7 +221,7 @@ Current agent: {current_agent['active_agent']}
         try:
             message_hash = encode_defunct(text=message)
             signed_message = Account.sign_message(message_hash, private_key=self.private_key)
-            print(f"[PIN AI NETWORK] signed message: {signed_message.signature.hex()} with public key: {self.eth_address}")
+            print(f"[PIN AI NETWORK] Host Agent: signed message: {signed_message.signature.hex()} with public key: {self.eth_address}")
             return signed_message.signature.hex()
         except Exception as e:
             print(f"Error signing message: {e}")
@@ -321,7 +321,7 @@ Current agent: {current_agent['active_agent']}
             # Send transaction
             tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
-            print(f"[PIN AI NETWORK] created task transaction sent!, check on explorer: https://sepolia.etherscan.io/tx/{tx_hash.hex()}")
+            print(f"[PIN AI NETWORK] Host Agent: created task transaction sent!, check on explorer: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
             
             # Wait for transaction confirmation
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)

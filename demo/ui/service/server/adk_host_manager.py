@@ -69,8 +69,6 @@ class ADKHostManager(ApplicationManager):
         default_agents = os.environ.get('DEFAULT_REMOTE_AGENTS', 'http://localhost:10003')
         remote_agent_addresses = [addr.strip() for addr in default_agents.split(',') if addr.strip()]
         
-        print(f"Initializing Host Agent with default remote agents: {remote_agent_addresses}")
-        
         # Initialize HostAgent with private key and default remote agents
         self._host_agent = HostAgent(
             remote_agent_addresses=remote_agent_addresses, 
@@ -78,8 +76,8 @@ class ADKHostManager(ApplicationManager):
             private_key=eth_private_key
         )
         
-        self.user_id = 'test_user'
-        self.app_name = 'A2A'
+        self.user_id = 'Pis'
+        self.app_name = 'PinAI Agent'
         self.api_key = api_key or os.environ.get('GOOGLE_API_KEY', '')
         self.uses_vertex_ai = (
             uses_vertex_ai

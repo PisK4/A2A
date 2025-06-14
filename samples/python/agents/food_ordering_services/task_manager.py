@@ -188,7 +188,8 @@ class AgentTaskManager(InMemoryTaskManager):
                 if recovered_address.lower() != address.lower():
                     return False, f"Signature verification failed. Expected {address}, got {recovered_address}"
                     
-                logger.info(f"Signature verified successfully for address {address}")
+                # logger.info(f"Signature verified successfully for address {address}")
+                print(f"[PIN AI NETWORK] Service Agent: signature verified successfully for Host Agent address {address}")
                 return True, ""
             except Exception as e:
                 return False, f"Error recovering address from signature: {e}"
@@ -291,7 +292,8 @@ class AgentTaskManager(InMemoryTaskManager):
                 logger.warning(f"Blockchain task validation failed: {e}, but allowing task to proceed")
                 return True, f"Blockchain validation failed but proceeding: {e}"
             
-            logger.info(f"Blockchain task confirmation validated successfully, UUID: {task_uuid}")
+            # logger.info(f"Blockchain task confirmation validated successfully, UUID: {task_uuid}")
+            print(f"[PIN AI NETWORK] Service Agent: On-chain task check confirmed! UUID: {task_uuid}")
             return True, ""
         except Exception as e:
             logger.error(f"Error validating blockchain confirmation: {e}")

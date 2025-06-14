@@ -205,7 +205,7 @@ class InMemoryTaskManager(TaskManager):
         )
 
     async def upsert_task(self, task_send_params: TaskSendParams) -> Task:
-        logger.info(f'Upserting task {task_send_params.id}')
+        # logger.info(f'Upserting task {task_send_params.id}')
         async with self.lock:
             task = self.tasks.get(task_send_params.id)
             if task is None:
