@@ -321,7 +321,7 @@ Current agent: {current_agent['active_agent']}
             # Send transaction
             tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
-            print(f"[PIN AI NETWORK] Host Agent: created task transaction sent!, check on explorer: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
+            print(f"[PIN AI NETWORK] Host Agent: created task transaction sent!, check on explorer: https://sepolia.basescan.org/tx/0x{tx_hash.hex()}")
             
             # Wait for transaction confirmation
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)

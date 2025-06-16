@@ -305,7 +305,7 @@ def place_order(order_id: str, tool_context: ToolContext) -> dict[str, Any]:
 
     order_response['status'] = 'confirmed'
     order_response['estimated_delivery'] = formatted_time
-    order_response['tracking_url'] = f"https://sepolia.basescan.org/tx/{blockchain_result['transaction_hash']}"
+    order_response['tracking_url'] = f"https://sepolia.basescan.org/tx/0x{blockchain_result['transaction_hash']}"
     
     return order_response
 
@@ -382,7 +382,7 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[dict[str
         # Send transaction
         tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
-        print(f"[PIN AI NETWORK] Service Agent: completeTask transaction sent, check on explorer: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
+        print(f"[PIN AI NETWORK] Service Agent: completeTask transaction sent, check on explorer: https://sepolia.basescan.org/tx/0x{tx_hash.hex()}")
 
         print(f"[PIN AI NETWORK] Service Agent: Claimed bounty: 0.001 ETH")
         
@@ -451,7 +451,7 @@ class FoodOrderingAgent(AgentWithTaskManager):
    - 订购的食物项目
    - 送达地址
 2. 送达时间默认为30分钟后，特殊要求默认为"没有"，无需特别询问这些信息
-3. **重要：如果用户提供了完整的订单信息（餐厅、食物、地址），在创建订单表单后必须立即调用 place_order()处理订单，不要询问用户确认或等待用户回复**
+3. **重要：如果用户提供了完整的订单信息（餐厅、食物、地址），在创建订单表单后询问用户确认或等待用户回复, 之后调用 place_order()处理订单，**
 4. 只有在信息不完整时才使用return_order_form()将表单发送给用户填写
 5. 在响应中包括订单ID、订单状态和预计送达时间
 
