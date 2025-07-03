@@ -135,7 +135,7 @@ class A2AServer:
             async def sse_stream_generator():
                 """Generate Server-Sent Events format manually"""
                 try:
-                async for item in result:
+                    async for item in result:
                         data = item.model_dump_json(exclude_none=True)
                         # Manually format SSE data
                         yield f"data: {data}\n\n"
