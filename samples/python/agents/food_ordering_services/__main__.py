@@ -2,7 +2,7 @@ import logging
 import os
 
 import click
-from eth_account import Account
+from common.aptos_config import AptosConfig
 
 from agent import FoodOrderingAgent
 from common.server import A2AServer
@@ -39,8 +39,8 @@ logging.getLogger('common.server.task_manager').setLevel(logging.INFO)
 @click.option('--host', default='localhost')
 @click.option('--port', default=10002)
 @click.option('--verify-signatures', is_flag=True, default=True, help='Enable signature verification')
-@click.option('--ethereum-address', default=None, help='Ethereum address for Remote Agent (optional)')
-def main(host, port, verify_signatures, ethereum_address):
+@click.option('--aptos-address', default=None, help='Aptos address for Remote Agent (optional)')
+def main(host, port, verify_signatures, aptos_address):
     try:
         # Check for API key only if Vertex AI is not configured
         if not os.getenv('GOOGLE_GENAI_USE_VERTEXAI') == 'TRUE':
@@ -49,19 +49,20 @@ def main(host, port, verify_signatures, ethereum_address):
                     'GOOGLE_API_KEY environment variable not set and GOOGLE_GENAI_USE_VERTEXAI is not TRUE.'
                 )
 
-        # If ethereum_address is not provided, try to get it from ETH_PRIVATE_KEY environment variable
-        if not ethereum_address:
-            eth_private_key = os.environ.get('ETH_PRIVATE_KEY')
-            if eth_private_key:
+        # If aptos_address is not provided, try to get it from APTOS_PRIVATE_KEY environment variable
+        if not aptos_address:
+            aptos_private_key = os.environ.get('APTOS_PRIVATE_KEY')
+            if aptos_private_key:
                 try:
-                    ethereum_address = Account.from_key(eth_private_key).address
-                    logger.info(f"Generated ethereum_address from ETH_PRIVATE_KEY: {ethereum_address}")
+                    aptos_config = AptosConfig(private_key=aptos_private_key)
+                    aptos_address = str(aptos_config.address)
+                    logger.info(f"Generated aptos_address from APTOS_PRIVATE_KEY: {aptos_address}")
                 except Exception as e:
-                    logger.error(f"Error generating Ethereum address from private key: {e}")
-                    ethereum_address = '0x123456789abcdef0123456789abcdef012345678'  # Default address
+                    logger.error(f"Error generating Aptos address from private key: {e}")
+                    aptos_address = '0x123456789abcdef0123456789abcdef012345678'  # Default address
             else:
-                logger.warning("ETH_PRIVATE_KEY not set, using default ethereum_address")
-                ethereum_address = '0x123456789abcdef0123456789abcdef012345678'  # Default address
+                logger.warning("APTOS_PRIVATE_KEY not set, using default aptos_address")
+                aptos_address = '0x123456789abcdef0123456789abcdef012345678'  # Default address
 
         capabilities = AgentCapabilities(streaming=False)
         
@@ -102,7 +103,7 @@ def main(host, port, verify_signatures, ethereum_address):
             ],
         )
         
-        # Add ethereum_address to AgentCard metadata
+        # Add aptos_address to AgentCard metadata
         agent_card = AgentCard(
             name='Food Ordering Agent',
             description='This agent helps Bay Area users find restaurants, order food delivery, or make restaurant reservations.',
@@ -112,7 +113,7 @@ def main(host, port, verify_signatures, ethereum_address):
             defaultOutputModes=FoodOrderingAgent.SUPPORTED_CONTENT_TYPES,
             capabilities=capabilities,
             skills=[restaurant_skill, delivery_skill, reservation_skill],
-            metadata={"ethereum_address": ethereum_address}  # Add ethereum address
+            metadata={"aptos_address": aptos_address}  # Add aptos address
         )
         
         # Initialize the task manager with signature verification and save ethereum_address
@@ -122,12 +123,12 @@ def main(host, port, verify_signatures, ethereum_address):
             agent=FoodOrderingAgent(),
             verify_signatures=verify_signatures
         )
-        # Set agent ethereum address
-        task_manager.agent_address = ethereum_address
-        logger.info(f"Agent ethereum address set to: {ethereum_address}")
+        # Set agent aptos address
+        task_manager.agent_address = aptos_address
+        logger.info(f"Agent aptos address set to: {aptos_address}")
         
         # Also set it as environment variable for easier access
-        os.environ['AGENT_ETH_ADDRESS'] = ethereum_address
+        os.environ['AGENT_APTOS_ADDRESS'] = aptos_address
         
         server = A2AServer(
             agent_card=agent_card,

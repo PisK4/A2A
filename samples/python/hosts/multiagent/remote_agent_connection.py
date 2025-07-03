@@ -78,26 +78,87 @@ class RemoteAgentConnections:
                     break
             return task
         # Non-streaming
-        response = await self.agent_client.send_task(request.model_dump())
-        merge_metadata(response.result, request)
-        # For task status updates, we need to propagate metadata and provide
-        # a unique message id.
-        if (
-            hasattr(response.result, 'status')
-            and hasattr(response.result.status, 'message')
-            and response.result.status.message
-        ):
-            merge_metadata(response.result.status.message, request.message)
-            m = response.result.status.message
-            if not m.metadata:
-                m.metadata = {}
-            if 'message_id' in m.metadata:
-                m.metadata['last_message_id'] = m.metadata['message_id']
-            m.metadata['message_id'] = str(uuid.uuid4())
+        try:
+            response = await self.agent_client.send_task(request.model_dump())
+            
+            # Check if response contains an error
+            if hasattr(response, 'error') and response.error:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Remote agent returned error: {response.error}")
+                # Return a failed task instead of None
+                failed_task = Task(
+                    id=request.id,
+                    sessionId=request.sessionId,
+                    status=TaskStatus(
+                        state=TaskState.FAILED,
+                        message=request.message,
+                    ),
+                    artifacts=[],
+                    metadata={'error': str(response.error)}
+                )
+                if task_callback:
+                    task_callback(failed_task, self.card)
+                return failed_task
+            
+            # Check if response.result is None
+            if not response.result:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Remote agent returned empty result")
+                # Return a failed task instead of None
+                failed_task = Task(
+                    id=request.id,
+                    sessionId=request.sessionId,
+                    status=TaskStatus(
+                        state=TaskState.FAILED,
+                        message=request.message,
+                    ),
+                    artifacts=[],
+                    metadata={'error': 'Empty result from remote agent'}
+                )
+                if task_callback:
+                    task_callback(failed_task, self.card)
+                return failed_task
+            
+            merge_metadata(response.result, request)
+            # For task status updates, we need to propagate metadata and provide
+            # a unique message id.
+            if (
+                hasattr(response.result, 'status')
+                and hasattr(response.result.status, 'message')
+                and response.result.status.message
+            ):
+                merge_metadata(response.result.status.message, request.message)
+                m = response.result.status.message
+                if not m.metadata:
+                    m.metadata = {}
+                if 'message_id' in m.metadata:
+                    m.metadata['last_message_id'] = m.metadata['message_id']
+                m.metadata['message_id'] = str(uuid.uuid4())
 
-        if task_callback:
-            task_callback(response.result, self.card)
-        return response.result
+            if task_callback:
+                task_callback(response.result, self.card)
+            return response.result
+        
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error sending task to remote agent: {e}")
+            # Return a failed task instead of None
+            failed_task = Task(
+                id=request.id,
+                sessionId=request.sessionId,
+                status=TaskStatus(
+                    state=TaskState.FAILED,
+                    message=request.message,
+                ),
+                artifacts=[],
+                metadata={'error': str(e)}
+            )
+            if task_callback:
+                task_callback(failed_task, self.card)
+            return failed_task
 
 
 def merge_metadata(target, source):

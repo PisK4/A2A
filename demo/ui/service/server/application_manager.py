@@ -6,7 +6,7 @@ from service.types import Conversation, Event
 
 class ApplicationManager(ABC):
     @abstractmethod
-    def create_conversation(self) -> Conversation:
+    async def create_conversation(self) -> Conversation:
         pass
 
     @abstractmethod

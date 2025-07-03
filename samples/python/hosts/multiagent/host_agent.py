@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import uuid
 from datetime import datetime
@@ -20,12 +21,14 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
-# Import Ethereum related libraries
-from web3 import Web3
-from eth_account import Account
-from eth_account.messages import encode_defunct
+# Import Aptos related libraries
+from common.aptos_config import AptosConfig
+from common.aptos_blockchain import AptosTaskManager, AptosSignatureManager
 
 from .remote_agent_connection import RemoteAgentConnections, TaskUpdateCallback
+
+
+logger = logging.getLogger(__name__)
 
 
 class HostAgent:
@@ -45,16 +48,13 @@ class HostAgent:
         self.remote_agent_connections: dict[str, RemoteAgentConnections] = {}
         self.cards: dict[str, AgentCard] = {}
         
-        # Get private key from environment variable if not provided
-        self.private_key = private_key or os.environ.get('ETH_PRIVATE_KEY')
+        # Initialize Aptos configuration
+        self.aptos_config = AptosConfig(private_key)
+        self.aptos_task_manager = AptosTaskManager(self.aptos_config)
+        self.aptos_signature_manager = AptosSignatureManager(self.aptos_config.account) if self.aptos_config.account else None
         
-        # Generate Ethereum address from private key if available
-        self.eth_address = None
-        if self.private_key:
-            try:
-                self.eth_address = Account.from_key(self.private_key).address
-            except Exception as e:
-                print(f"Error generating Ethereum address: {e}")
+        # Set Aptos address for backward compatibility
+        self.aptos_address = str(self.aptos_config.address) if self.aptos_config.address else None
                 
         for address in remote_agent_addresses:
             card_resolver = A2ACardResolver(address)
@@ -207,7 +207,7 @@ Current agent: {current_agent['active_agent']}
         return user_context
 
     def sign_message(self, message: str) -> str:
-        """Sign a message using the host agent's private key.
+        """Sign a message using the host agent's Aptos private key.
         
         Args:
             message: The message to sign.
@@ -215,24 +215,24 @@ Current agent: {current_agent['active_agent']}
         Returns:
             The hex string of the signature if successful, or None if failed.
         """
-        if not self.private_key:
+        if not self.aptos_signature_manager:
             return None
             
         try:
-            message_hash = encode_defunct(text=message)
-            signed_message = Account.sign_message(message_hash, private_key=self.private_key)
-            print(f"[PIN AI NETWORK] Host Agent: signed message: {signed_message.signature.hex()} with public key: {self.eth_address}")
-            return signed_message.signature.hex()
+            signature = self.aptos_signature_manager.sign_message(message)
+            if signature:
+                logger.debug(f"[APTOS NETWORK] Host Agent: signed message with Ed25519, address: {self.aptos_address}")
+            return signature
         except Exception as e:
-            print(f"Error signing message: {e}")
+            logger.error(f"Error signing message with Ed25519: {e}")
             return None
 
     async def confirm_task(
         self, agent_name: str, message: str, tool_context: ToolContext
     ):
-        """Interacts with blockchain to confirm tasks and sends them to remote agents.
+        """Interacts with Aptos blockchain to confirm tasks and sends them to remote agents.
         
-        This method is similar to send_task but registers task confirmation on blockchain.
+        This method is similar to send_task but registers task confirmation on Aptos blockchain.
         
         Args:
           agent_name: The name of the remote agent
@@ -260,76 +260,67 @@ Current agent: {current_agent['active_agent']}
             taskId = str(uuid.uuid4())
         sessionId = state['session_id']
         
-        # Get remote agent's ethereum address
+        # Get remote agent's Aptos address
         remote_agent_address = None
         if hasattr(card, 'metadata') and card.metadata:
-            remote_agent_address = card.metadata.get('ethereum_address')
+            remote_agent_address = card.metadata.get('aptos_address') or card.metadata.get('ethereum_address')
             
         # If not found in card metadata, try environment variables
         if not remote_agent_address:
-            remote_agent_address = os.environ.get('REMOTE_AGENT_ETH_ADDRESS', "0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
+            remote_agent_address = os.environ.get('REMOTE_AGENT_APTOS_ADDRESS', "0x69029bc61f9828ed712a9238f70b4fe629b35144cd638a50f60bd278916b33c5")
             
         if not remote_agent_address:
-            raise ValueError(f"Could not determine ethereum address for remote agent {agent_name}")
+            raise ValueError(f"Could not determine Aptos address for remote agent {agent_name}")
             
-        # Initialize Web3 connection
+        # Check Aptos connection
         try:
-            w3 = Web3(Web3.HTTPProvider(os.environ.get('CHAIN_RPC', "http://127.0.0.1:8545/")))
-            if not w3.is_connected():
-                raise ConnectionError("Unable to connect to blockchain network")
+            if not await self.aptos_config.is_connected():
+                raise ConnectionError("Unable to connect to Aptos network")
         except Exception as e:
-            print(f"Blockchain connection error: {e}")
-            print(f"Falling back to regular send_task without blockchain confirmation")
+            logger.warning(f"Aptos connection error: {e}")
+            logger.info(f"Falling back to regular send_task without blockchain confirmation")
             # Fallback to regular send_task when blockchain is not available
             return await self.send_task(agent_name, message, tool_context)
             
-        # Hardcoded contract address
-        contract_address = os.environ.get('PIN_AI_NETWORK_TASK_CONTRACT', "0x5FbDB2315678afecb367f032d93F642f64180aa3")
-        
-        # Contract ABI with confirmTask function
-        abi = [{"inputs":[{"name":"uuid","type":"uint256"},{"name":"remoteAgent","type":"address"}],"name":"confirmTask","outputs":[],"stateMutability":"payable","type":"function"}]
-        contract = w3.eth.contract(address=contract_address, abi=abi)
-        
-        # Convert sessionId to on-chain task UUID
-        task_uuid = int(sessionId.replace('-', ''), 16) % (2**256)
-        
-        # Cannot proceed without private key
-        if not self.private_key:
-            raise ValueError("Host Agent has no private key configured, cannot perform blockchain confirmation")
+        # Cannot proceed without account
+        if not self.aptos_config.account:
+            raise ValueError("Host Agent has no Aptos account configured, cannot perform blockchain confirmation")
             
-        # default 0.001 ETH (convert to integer)
-        bounty = int(os.environ.get('PIN_AI_NETWORK_TASK_BOUNTY', "1000000000000000"))
+        # Default bounty: 0.01 APT (in octas)
+        bounty = int(os.environ.get('APTOS_TASK_BOUNTY', "1000000"))  # 0.01 APT = 1,000,000 octas
+        deadline_seconds = int(os.environ.get('APTOS_TASK_DEADLINE', "7200"))  # 2 hours default
+        
         try:
-            # Create account instance
-            account = Account.from_key(self.private_key)
+            # Create task on Aptos blockchain using sessionId as task_id
+            task_description = f"A2A Task: {message[:100]}..."  # Truncate for description
             
-            # Build transaction
-            tx = contract.functions.confirmTask(
-                task_uuid,
-                remote_agent_address
-            ).build_transaction({
-                'from': account.address,
-                'value': bounty,  # Send funds as integer
-                'gas': 500000,
-                'gasPrice': w3.eth.gas_price,
-                'nonce': w3.eth.get_transaction_count(account.address)
-            })
-            
-            # Sign transaction
-            signed_tx = w3.eth.account.sign_transaction(tx, private_key=self.private_key)
-            
-            # Send transaction
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            # Add detailed logging for debugging
+            print(f"[APTOS DEBUG] Creating task with parameters:")
+            print(f"  task_id: {sessionId}")
+            print(f"  service_agent: {remote_agent_address}")
+            print(f"  amount_apt: {bounty}")
+            print(f"  deadline_seconds: {deadline_seconds}")
+            print(f"  description: {task_description}")
+            print(f"  host_address: {self.aptos_config.address}")
+            print(f"  module_address: {self.aptos_config.module_address}")
 
-            print(f"[PIN AI NETWORK] Host Agent: created task transaction sent!, check on explorer: https://sepolia.basescan.org/tx/0x{tx_hash.hex()}")
+            result = await self.aptos_task_manager.create_task(
+                task_id=sessionId,  # Use sessionId as task_id for consistency
+                service_agent=remote_agent_address,
+                amount_apt=bounty,
+                deadline_seconds=deadline_seconds,
+                description=task_description
+            )
             
-            # Wait for transaction confirmation
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-            tx_hash_hex = receipt.transactionHash.hex()
+            if not result.get('success'):
+                raise Exception(f"Failed to create task on Aptos: {result.get('error')}")
+                
+            tx_hash = result.get('tx_hash')
+            logger.info(f"[APTOS NETWORK] Host Agent: task created successfully! tx: {tx_hash}")
             
         except Exception as e:
-            print(f"Blockchain transaction error: {e}")
-            print(f"Falling back to regular send_task without blockchain confirmation")
+            logger.warning(f"Aptos transaction error: {e}")
+            logger.info(f"Falling back to regular send_task without blockchain confirmation")
             # Fallback to regular send_task when blockchain transaction fails
             return await self.send_task(agent_name, message, tool_context)
         
@@ -348,19 +339,20 @@ Current agent: {current_agent['active_agent']}
         
         # Add signature information to metadata
         signature = None
-        if self.eth_address:
-            message_to_sign = f"{self.eth_address}{sessionId}"
+        if self.aptos_address:
+            message_to_sign = f"{self.aptos_address}{sessionId}"
             signature = self.sign_message(message_to_sign)
             if signature:
                 metadata["auth"] = {
-                    "address": self.eth_address,
+                    "address": self.aptos_address,
                     "signature": signature
                 }
         
         # Add blockchain confirmation information to metadata
         metadata["blockchain"] = {
-            "confirmTask": {
-                "tx_hash": tx_hash_hex
+            "createTask": {
+                "tx_hash": tx_hash,
+                "module_address": self.aptos_config.module_address
             }
         }
         
@@ -379,6 +371,16 @@ Current agent: {current_agent['active_agent']}
         
         # Send task
         task = await client.send_task(request, self.task_callback)
+        
+        # Check if task is None
+        if not task:
+            logger.error(f"Received None task from agent {agent_name}")
+            raise ValueError(f"Agent {agent_name} returned no task result")
+            
+        # Check if task.status is None
+        if not task.status:
+            logger.error(f"Task {task.id} has no status")
+            raise ValueError(f"Agent {agent_name} task has no status")
         
         # Update session state
         state['session_active'] = task.status.state not in [
@@ -399,21 +401,23 @@ Current agent: {current_agent['active_agent']}
             
         # Process response
         response = []
-        if task.status.message:
+        if task.status and task.status.message:
             response.extend(
                 convert_parts(task.status.message.parts, tool_context)
             )
         if task.artifacts:
             for artifact in task.artifacts:
-                response.extend(convert_parts(artifact.parts, tool_context))
+                if artifact and artifact.parts:
+                    response.extend(convert_parts(artifact.parts, tool_context))
                 
         # Return result with blockchain confirmation information
         response.append({
             "blockchain_confirmation": {
-                "confirmTask": {
-                    "transaction_hash": tx_hash_hex,
-                    "contract_address": contract_address,
-                    "task_uuid": task_uuid
+                "createTask": {
+                    "transaction_hash": tx_hash,
+                    "module_address": self.aptos_config.module_address,
+                    "task_id": sessionId,
+                    "gas_used": result.get('gas_used', 0)
                 }
             }
         })
@@ -449,11 +453,11 @@ Current agent: {current_agent['active_agent']}
             taskId = str(uuid.uuid4())
         sessionId = state['session_id']
         
-        # Generate ECDSA signature for authentication
+        # Generate Ed25519 signature for authentication
         signature = None
-        if self.private_key and self.eth_address:
+        if self.aptos_signature_manager and self.aptos_address:
             # Sign message combining agent address and session ID
-            message_to_sign = f"{self.eth_address}{sessionId}"
+            message_to_sign = f"{self.aptos_address}{sessionId}"
             signature = self.sign_message(message_to_sign)
         
         task: Task
@@ -470,10 +474,10 @@ Current agent: {current_agent['active_agent']}
         metadata.update(conversation_id=sessionId, message_id=messageId)
         
         # Add signature information to metadata if available
-        if signature and self.eth_address:
+        if signature and self.aptos_address:
             metadata.update({
                 "auth": {
-                    "address": self.eth_address,
+                    "address": self.aptos_address,
                     "signature": signature
                 }
             })
@@ -491,6 +495,17 @@ Current agent: {current_agent['active_agent']}
             metadata={'conversation_id': sessionId},
         )
         task = await client.send_task(request, self.task_callback)
+        
+        # Check if task is None
+        if not task:
+            logger.error(f"Received None task from agent {agent_name}")
+            raise ValueError(f"Agent {agent_name} returned no task result")
+            
+        # Check if task.status is None
+        if not task.status:
+            logger.error(f"Task {task.id} has no status")
+            raise ValueError(f"Agent {agent_name} task has no status")
+        
         # Assume completion unless a state returns that isn't complete
         state['session_active'] = task.status.state not in [
             TaskState.COMPLETED,
@@ -509,14 +524,15 @@ Current agent: {current_agent['active_agent']}
             # Raise error for failure
             raise ValueError(f'Agent {agent_name} task {task.id} failed')
         response = []
-        if task.status.message:
+        if task.status and task.status.message:
             # Assume the information is in the task message.
             response.extend(
                 convert_parts(task.status.message.parts, tool_context)
             )
         if task.artifacts:
             for artifact in task.artifacts:
-                response.extend(convert_parts(artifact.parts, tool_context))
+                if artifact and artifact.parts:
+                    response.extend(convert_parts(artifact.parts, tool_context))
         return response
 
 

@@ -44,7 +44,7 @@ class InMemoryFakeAgentManager(ApplicationManager):
         self._agents = []
         self._task_map = {}
 
-    def create_conversation(self) -> Conversation:
+    async def create_conversation(self) -> Conversation:
         conversation_id = str(uuid.uuid4())
         c = Conversation(conversation_id=conversation_id, is_active=True)
         self._conversations.append(c)

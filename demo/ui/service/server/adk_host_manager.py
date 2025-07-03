@@ -1,6 +1,7 @@
 import base64
 import datetime
 import json
+import logging
 import os
 import uuid
 
@@ -34,6 +35,9 @@ from service.types import Conversation, Event
 from utils.agent_card import get_agent_card
 
 
+logger = logging.getLogger(__name__)
+
+
 class ADKHostManager(ApplicationManager):
     """An implementation of memory based management with fake agent actions
 
@@ -62,8 +66,8 @@ class ADKHostManager(ApplicationManager):
         self._artifact_service = InMemoryArtifactService()
         self._memory_service = InMemoryMemoryService()
         
-        # Get the Ethereum private key from environment variable
-        eth_private_key = os.environ.get('ETH_PRIVATE_KEY')
+        # Get the Aptos private key from environment variable
+        aptos_private_key = os.environ.get('APTOS_PRIVATE_KEY')
         
         # Get default remote agents from environment variable
         default_agents = os.environ.get('DEFAULT_REMOTE_AGENTS', 'http://localhost:10003')
@@ -73,7 +77,7 @@ class ADKHostManager(ApplicationManager):
         self._host_agent = HostAgent(
             remote_agent_addresses=remote_agent_addresses, 
             task_callback=self.task_callback,
-            private_key=eth_private_key
+            private_key=aptos_private_key
         )
         
         self.user_id = 'Pis'
@@ -121,8 +125,8 @@ class ADKHostManager(ApplicationManager):
             memory_service=self._memory_service,
         )
 
-    def create_conversation(self) -> Conversation:
-        session = self._session_service.create_session(
+    async def create_conversation(self) -> Conversation:
+        session = await self._session_service.create_session(
             app_name=self.app_name, user_id=self.user_id
         )
         conversation_id = session.id
@@ -159,6 +163,9 @@ class ADKHostManager(ApplicationManager):
             if 'conversation_id' in message.metadata
             else None
         )
+        
+        self._print_message_to_terminal("👤 user:", message)
+        
         # Now check the conversation and attach the message id.
         conversation = self.get_conversation(conversation_id)
         if conversation:
@@ -173,13 +180,13 @@ class ADKHostManager(ApplicationManager):
         )
         final_event: GenAIEvent | None = None
         # Determine if a task is to be resumed.
-        session = self._session_service.get_session(
+        session = await self._session_service.get_session(
             app_name='A2A', user_id='test_user', session_id=conversation_id
         )
         
         # Create session if it doesn't exist
         if session is None:
-            session = self._session_service.create_session(
+            session = await self._session_service.create_session(
                 app_name='A2A', 
                 user_id='test_user', 
                 session_id=conversation_id,
@@ -207,7 +214,7 @@ class ADKHostManager(ApplicationManager):
         ):
             state_update['task_id'] = self._task_map[last_message_id]
         # Need to upsert session state now, only way is to append an event.
-        self._session_service.append_event(
+        await self._session_service.append_event(
             session,
             ADKEvent(
                 id=ADKEvent.new_id(),
@@ -251,10 +258,54 @@ class ADKHostManager(ApplicationManager):
                 'message_id': new_message_id,
             }
             self._messages.append(response)
+            
+            # 打印Host Agent响应到终端
+            self._print_message_to_terminal("🤖 Host Agent", response)
 
         if conversation:
             conversation.messages.append(response)
         self._pending_message_ids.remove(message_id)
+
+    def _print_message_to_terminal(self, sender: str, message: Message):
+        """Print message to terminal"""
+        if not message:
+            return
+            
+        print(f"\n{'='*60}")
+        print(f"{sender} - {datetime.datetime.now().strftime('%H:%M:%S')}")
+        print(f"{'='*60}")
+        
+        if message.parts:
+            for part in message.parts:
+                if hasattr(part, 'text') and part.text:
+                    # Handle long text, limit line length
+                    text = part.text.strip()
+                    if len(text) > 80:
+                        # Split by lines and reformat
+                        words = text.split()
+                        lines = []
+                        current_line = ""
+                        for word in words:
+                            if len(current_line + word) + 1 <= 80:
+                                current_line += (word + " ")
+                            else:
+                                if current_line:
+                                    lines.append(current_line.strip())
+                                current_line = word + " "
+                        if current_line:
+                            lines.append(current_line.strip())
+                        for line in lines:
+                            print(line)
+                    else:
+                        print(text)
+                elif hasattr(part, 'content') and part.content:
+                    print(part.content)
+        
+        # Print task info if available
+        if message.metadata and 'task_id' in message.metadata:
+            print(f"📋 Task ID: {message.metadata['task_id']}")
+        
+        print(f"{'='*60}\n")
 
     def add_task(self, task: Task):
         self._tasks.append(task)
@@ -266,14 +317,24 @@ class ADKHostManager(ApplicationManager):
                 return
 
     def task_callback(self, task: TaskCallbackArg, agent_card: AgentCard):
+        # Check if task is None
+        if not task:
+            logger.warning("task_callback called with None task")
+            return None
+            
+        # Print task status update to terminal
+        self._print_task_update_to_terminal(task, agent_card)
+            
         self.emit_event(task, agent_card)
         if isinstance(task, TaskStatusUpdateEvent):
             current_task = self.add_or_get_task(task)
-            current_task.status = task.status
-            self.attach_message_to_task(task.status.message, current_task.id)
-            self.insert_message_history(current_task, task.status.message)
+            if task.status:
+                current_task.status = task.status
+                if task.status.message:
+                    self.attach_message_to_task(task.status.message, current_task.id)
+                    self.insert_message_history(current_task, task.status.message)
+                    self.insert_id_trace(task.status.message)
             self.update_task(current_task)
-            self.insert_id_trace(task.status.message)
             return current_task
         if isinstance(task, TaskArtifactUpdateEvent):
             current_task = self.add_or_get_task(task)
@@ -282,14 +343,46 @@ class ADKHostManager(ApplicationManager):
             return current_task
         # Otherwise this is a Task, either new or updated
         if not any(filter(lambda x: x.id == task.id, self._tasks)):
-            self.attach_message_to_task(task.status.message, task.id)
-            self.insert_id_trace(task.status.message)
+            if task.status and task.status.message:
+                self.attach_message_to_task(task.status.message, task.id)
+                self.insert_id_trace(task.status.message)
             self.add_task(task)
             return task
-        self.attach_message_to_task(task.status.message, task.id)
-        self.insert_id_trace(task.status.message)
+        if task.status and task.status.message:
+            self.attach_message_to_task(task.status.message, task.id)
+            self.insert_id_trace(task.status.message)
         self.update_task(task)
         return task
+
+    def _print_task_update_to_terminal(self, task: TaskCallbackArg, agent_card: AgentCard):
+        """Print task update to terminal"""
+        if not task:
+            return
+            
+        agent_name = agent_card.name if agent_card else "Unknown Agent"
+        timestamp = datetime.datetime.now().strftime('%H:%M:%S')
+        
+        if isinstance(task, TaskStatusUpdateEvent):
+            if task.status:
+                state = task.status.state if task.status.state else "UNKNOWN"
+                print(f"\n🔄 [{timestamp}] {agent_name} - Task Status: {state}")
+                if task.status.message and task.status.message.parts:
+                    for part in task.status.message.parts:
+                        if hasattr(part, 'text') and part.text:
+                            print(f"   Message: {part.text}")
+        elif isinstance(task, TaskArtifactUpdateEvent):
+            print(f"\n📁 [{timestamp}] {agent_name} - Task Result Update")
+            if task.artifact and task.artifact.parts:
+                for part in task.artifact.parts:
+                    if hasattr(part, 'text') and part.text:
+                        print(f"   Result: {part.text}")
+        elif hasattr(task, 'status') and task.status:
+            state = task.status.state if task.status.state else "UNKNOWN"
+            print(f"\n📋 [{timestamp}] {agent_name} - Task: {task.id}, Status: {state}")
+            if task.status.message and task.status.message.parts:
+                for part in task.status.message.parts:
+                    if hasattr(part, 'text') and part.text:
+                        print(f"   Message: {part.text}")
 
     def emit_event(self, task: TaskCallbackArg, agent_card: AgentCard):
         content = None
@@ -298,31 +391,47 @@ class ADKHostManager(ApplicationManager):
             {'conversation_id': conversation_id} if conversation_id else None
         )
         if isinstance(task, TaskStatusUpdateEvent):
-            if task.status.message:
+            if task.status and task.status.message:
                 content = task.status.message
             else:
+                state_text = str(task.status.state) if task.status else "Unknown"
                 content = Message(
-                    parts=[TextPart(text=str(task.status.state))],
+                    parts=[TextPart(text=state_text)],
                     role='agent',
                     metadata=metadata,
                 )
         elif isinstance(task, TaskArtifactUpdateEvent):
-            content = Message(
-                parts=task.artifact.parts,
-                role='agent',
-                metadata=metadata,
-            )
+            if task.artifact and task.artifact.parts:
+                content = Message(
+                    parts=task.artifact.parts,
+                    role='agent',
+                    metadata=metadata,
+                )
+            else:
+                content = Message(
+                    parts=[TextPart(text="Artifact update received")],
+                    role='agent',
+                    metadata=metadata,
+                )
         elif task and task.status and task.status.message:
             content = task.status.message
         elif task and task.artifacts:
             parts = []
             for a in task.artifacts:
-                parts.extend(a.parts)
-            content = Message(
-                parts=parts,
-                role='agent',
-                metadata=metadata,
-            )
+                if a and a.parts:
+                    parts.extend(a.parts)
+            if parts:
+                content = Message(
+                    parts=parts,
+                    role='agent',
+                    metadata=metadata,
+                )
+            else:
+                content = Message(
+                    parts=[TextPart(text="Task artifacts received")],
+                    role='agent',
+                    metadata=metadata,
+                )
         else:
             state_text = str(task.status.state) if task and task.status else "Unknown"
             content = Message(

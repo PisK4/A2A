@@ -5,6 +5,8 @@ description = "Agent2Agent samples"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "aptos-sdk",
+    "google-adk>=0.4.0",
     "httpx>=0.28.1",
     "httpx-sse>=0.4.0",
     "jwcrypto>=1.5.6",
@@ -33,6 +35,9 @@ members = [
     "agents/ag2",
     "agents/food_ordering_services"
 ]
+
+[tool.uv.sources]
+aptos-sdk = { git = "https://github.com/aptos-labs/aptos-python-sdk.git" }
 
 [build-system]
 requires = ["hatchling"]

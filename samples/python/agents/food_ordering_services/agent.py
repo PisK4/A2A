@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 import os
 import uuid
@@ -12,10 +13,13 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.tool_context import ToolContext
 from task_manager import AgentWithTaskManager
-# Import Ethereum related libraries
-from web3 import Web3
-from eth_account import Account
+# Import Aptos related libraries
+from common.aptos_config import AptosConfig
+from common.aptos_blockchain import AptosTaskManager
 
+
+# Configure logger
+logger = logging.getLogger(__name__)
 
 # Local cache of created order_ids for demo purposes.
 order_ids = set()
@@ -289,29 +293,82 @@ def place_order(order_id: str, tool_context: ToolContext) -> dict[str, Any]:
     order_response = {
         'order_id': order_id,
     }
-    # Attempt blockchain interaction
-
+    
+    # Initialize blockchain_result to avoid UnboundLocalError
+    blockchain_result = None
+    
+    # Attempt blockchain interaction - handle both sync and async contexts
     try:
-        blockchain_result = _complete_task_on_blockchain(tool_context)
-        if blockchain_result:
-            order_response['blockchain_completion'] = blockchain_result
+        import asyncio
+        import concurrent.futures
+        import threading
+        
+        def run_blockchain_task():
+            """Run blockchain task in a new event loop"""
+            try:
+                # Create a new event loop for this thread
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(_complete_task_on_blockchain(tool_context))
+                finally:
+                    new_loop.close()
+            except Exception as e:
+                logger.error(f"Error in blockchain task thread: {e}")
+                return {
+                    'status': 'failed',
+                    'error': str(e)
+                }
+        
+        try:
+            # Check if we're in an async context
+            loop = asyncio.get_running_loop()
+            # If we're in an event loop, run in a separate thread
+            logger.info("Running blockchain task in separate thread to avoid blocking event loop")
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_blockchain_task)
+                blockchain_result = future.result(timeout=30)  # 30 second timeout
+                
+        except RuntimeError:
+            # No event loop running, safe to use asyncio.run()
+            logger.info("Running blockchain task in current thread")
+            blockchain_result = asyncio.run(_complete_task_on_blockchain(tool_context))
+            
     except Exception as e:
         # Log error but don't fail the order
-        print(f"Blockchain interaction failed: {e}")
-        order_response['blockchain_completion'] = {
+        logger.warning(f"Blockchain interaction failed: {e}")
+        blockchain_result = {
             'status': 'failed',
             'error': str(e)
         }
 
+    # Set order completion status
     order_response['status'] = 'confirmed'
     order_response['estimated_delivery'] = formatted_time
-    order_response['tracking_url'] = f"https://sepolia.basescan.org/tx/0x{blockchain_result['transaction_hash']}"
+    
+    # Add blockchain completion result if available
+    if blockchain_result:
+        order_response['blockchain_completion'] = blockchain_result
+    
+    # Add tracking URL if blockchain transaction was successful
+    if blockchain_result and blockchain_result.get('status') == 'completed' and blockchain_result.get('transaction_hash'):
+        # For Aptos network, use Aptos explorer with dynamic network detection
+        tx_hash = blockchain_result['transaction_hash']
+        # Determine network from environment or default to devnet
+        aptos_node_url = os.environ.get('APTOS_NODE_URL', 'https://fullnode.devnet.aptoslabs.com')
+        if 'mainnet' in aptos_node_url:
+            network = 'mainnet'
+        elif 'testnet' in aptos_node_url:
+            network = 'testnet'
+        else:
+            network = 'devnet'
+        order_response['tracking_url'] = f"https://explorer.aptoslabs.com/txn/{tx_hash}?network={network}"
     
     return order_response
 
 
-def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[dict[str, Any]]:
-    """Complete the task on blockchain by calling completeTask function.
+async def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[dict[str, Any]]:
+    """Complete the task on Aptos blockchain by calling complete_task function.
     
     Args:
         tool_context: The tool context containing session information
@@ -326,83 +383,71 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[dict[str
         
         if _current_agent_instance and hasattr(_current_agent_instance, '_current_session_id'):
             session_id = _current_agent_instance._current_session_id
-            # print(f"DEBUG: Found session_id from global agent instance: {session_id}")
         
         if not session_id:
-            print("No session_id found in global agent instance")
+            logger.warning("No session_id found in global agent instance")
             return None
             
-        # Convert sessionId to on-chain task UUID
-        task_uuid = int(session_id.replace('-', ''), 16) % (2**256)
+        # Use session_id directly as task_id for Aptos (no conversion needed)
+        task_id = session_id
         
-        # Get agent's private key from environment (prefer Food Agent specific key)
-        agent_private_key = os.environ.get('FOOD_AGENT_ETH_PRIVATE_KEY') or os.environ.get('ETH_PRIVATE_KEY')
-        if not agent_private_key:
-            print("No FOOD_AGENT_ETH_PRIVATE_KEY or ETH_PRIVATE_KEY found in environment")
+        # Get Host Agent address (task creator) from environment
+        host_agent_address = os.environ.get('HOST_AGENT_APTOS_ADDRESS')
+        if not host_agent_address:
+            logger.error("No HOST_AGENT_APTOS_ADDRESS found in environment")
             return None
         
-        # Log which key is being used for debugging
-        key_source = "FOOD_AGENT_ETH_PRIVATE_KEY" if os.environ.get('FOOD_AGENT_ETH_PRIVATE_KEY') else "ETH_PRIVATE_KEY"
-        # print(f"Using private key from: {key_source}")
+        # Ensure address format is correct for Aptos
+        if not host_agent_address.startswith('0x'):
+            host_agent_address = '0x' + host_agent_address
             
-        # Initialize Web3 connection
-        w3 = Web3(Web3.HTTPProvider(os.environ.get('CHAIN_RPC', "http://127.0.0.1:8545/")))
-        if not w3.is_connected():
-            raise ConnectionError("Unable to connect to blockchain network")
-            
-        # Contract configuration
-        contract_address = os.environ.get('PIN_AI_NETWORK_TASK_CONTRACT', "0x5FbDB2315678afecb367f032d93F642f64180aa3")
+        # Initialize Aptos configuration and task manager
+        try:
+            aptos_config = AptosConfig()
+            if not await aptos_config.is_connected():
+                logger.error("Unable to connect to Aptos network")
+                return {'status': 'failed', 'error': 'Aptos network connection failed'}
+                
+            if not aptos_config.account:
+                logger.error("No Aptos private key found in environment")
+                return {'status': 'failed', 'error': 'Aptos private key not configured'}
+                
+            aptos_task_manager = AptosTaskManager(aptos_config)
+        except Exception as e:
+            logger.error(f"Failed to initialize Aptos configuration: {e}")
+            return {'status': 'failed', 'error': f'Aptos initialization failed: {str(e)}'}
         
-        # Contract ABI with completeTask function
-        abi = [
-            {
-                "inputs": [{"name": "uuid", "type": "uint256"}],
-                "name": "completeTask",
-                "outputs": [],
-                "stateMutability": "nonpayable",
-                "type": "function"
+        # Call complete_task on Aptos blockchain
+        result = await aptos_task_manager.complete_task(
+            task_agent_address=host_agent_address,
+            task_id=task_id
+        )
+        
+        if result.get('success'):
+            tx_hash = result.get('tx_hash')
+            logger.info(f"[APTOS NETWORK] Service Agent: complete_task transaction sent: {tx_hash}")
+            logger.info(f"[APTOS NETWORK] Service Agent: Claimed bounty from task completion")
+            
+            return {
+                'status': 'completed',
+                'transaction_hash': tx_hash,
+                'task_id': task_id,
+                'host_agent_address': host_agent_address,
+                'network': 'aptos'
             }
-        ]
-        contract = w3.eth.contract(address=contract_address, abi=abi)
-        
-        # Create account instance
-        account = Account.from_key(agent_private_key)
-        
-        # Build transaction
-        tx = contract.functions.completeTask(task_uuid).build_transaction({
-            'from': account.address,
-            'gas': 300000,
-            'gasPrice': w3.eth.gas_price,
-            'nonce': w3.eth.get_transaction_count(account.address)
-        })
-        
-        # Sign transaction
-        signed_tx = w3.eth.account.sign_transaction(tx, private_key=agent_private_key)
-        
-        # Send transaction
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-
-        print(f"[PIN AI NETWORK] Service Agent: completeTask transaction sent, check on explorer: https://sepolia.basescan.org/tx/0x{tx_hash.hex()}")
-
-        print(f"[PIN AI NETWORK] Service Agent: Claimed bounty: 0.001 ETH")
-        
-        # Wait for transaction confirmation
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-        tx_hash_hex = receipt.transactionHash.hex()
-        print(f"Blockchain completeTask transaction confirmed: {tx_hash_hex}")
-        
-        return {
-            'status': 'completed',
-            'transaction_hash': tx_hash_hex,
-            'contract_address': contract_address,
-            'task_uuid': task_uuid,
-            'block_number': receipt.blockNumber,
-            'gas_used': receipt.gasUsed
-        }
+        else:
+            logger.error(f"Blockchain task completion failed: {result.get('error', 'Unknown error')}")
+            return {
+                'status': 'failed',
+                'error': result.get('error', 'Unknown blockchain error')
+            }
         
     except Exception as e:
-        print(f"Error completing task on blockchain: {e}")
-        raise e
+        logger.error(f"Error completing task on Aptos blockchain: {e}")
+        return {
+            'status': 'failed',
+            'error': str(e)
+        }
 
 
 class FoodOrderingAgent(AgentWithTaskManager):
