@@ -296,8 +296,7 @@ def place_order(order_id: str, tool_context: ToolContext) -> dict[str, Any]:
     
     # Initialize blockchain_result to avoid UnboundLocalError
     blockchain_result = None
-    
-    # Attempt blockchain interaction - handle both sync and async contexts
+        # Attempt blockchain interaction - handle both sync and async contexts
     try:
         import asyncio
         import concurrent.futures

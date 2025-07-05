@@ -40,12 +40,12 @@ class AgentWithTaskManager(ABC):
     def get_processing_message(self) -> str:
         pass
 
-    async def invoke(self, query, session_id) -> str:
+    def invoke(self, query, session_id) -> str:
         # Store session_id for use in tool functions
         if hasattr(self, '_current_session_id'):
             self._current_session_id = session_id
         
-        session = await self._runner.session_service.get_session(
+        session = self._runner.session_service.get_session(
             app_name=self._agent.name,
             user_id=self._user_id,
             session_id=session_id,
@@ -54,7 +54,7 @@ class AgentWithTaskManager(ABC):
             role='user', parts=[types.Part.from_text(text=query)]
         )
         if session is None:
-            session = await self._runner.session_service.create_session(
+            session = self._runner.session_service.create_session(
                 app_name=self._agent.name,
                 user_id=self._user_id,
                 state={},
@@ -76,7 +76,7 @@ class AgentWithTaskManager(ABC):
         if hasattr(self, '_current_session_id'):
             self._current_session_id = session_id
             
-        session = await self._runner.session_service.get_session(
+        session = self._runner.session_service.get_session(
             app_name=self._agent.name,
             user_id=self._user_id,
             session_id=session_id,
@@ -85,7 +85,7 @@ class AgentWithTaskManager(ABC):
             role='user', parts=[types.Part.from_text(text=query)]
         )
         if session is None:
-            session = await self._runner.session_service.create_session(
+            session = self._runner.session_service.create_session(
                 app_name=self._agent.name,
                 user_id=self._user_id,
                 state={},
@@ -470,7 +470,7 @@ class AgentTaskManager(InMemoryTaskManager):
         task_send_params: TaskSendParams = request.params
         query = self._get_user_query(task_send_params)
         try:
-            result = await self.agent.invoke(query, task_send_params.sessionId)
+            result = self.agent.invoke(query, task_send_params.sessionId)
         except Exception as e:
             logger.error(f'Error invoking agent: {e}')
             raise ValueError(f'Error invoking agent: {e}')

@@ -132,7 +132,7 @@ class AptosTaskManager:
             tx_hash = await self.client.submit_bcs_transaction(signed_transaction)
             await self.client.wait_for_transaction(tx_hash)
             
-            logger.info(f"[APTOS] Task completed successfully: {task_id}, tx: {tx_hash}")
+            logger.info(f"[APTOS] Task completed ! check transaction on https://explorer.aptoslabs.com/txn/{tx_hash}?network=devnet.")
             
             return {'success': True, 'tx_hash': tx_hash}
             

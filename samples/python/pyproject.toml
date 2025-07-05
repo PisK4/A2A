@@ -33,7 +33,8 @@ members = [
     "agents/semantickernel",
     "agents/mindsdb",
     "agents/ag2",
-    "agents/food_ordering_services"
+    "agents/food_ordering_services",
+    "agents/uber_services"
 ]
 
 [tool.uv.sources]
