@@ -21,6 +21,7 @@ members = [
     "a2a-samples-mcp",
     "a2a-semantic-kernel",
     "food-ordering-services-agent-adk",
+    "uber-services-agent-adk",
 ]
 
 [[package]]
@@ -5464,6 +5465,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8b/2e/c14812d3d4d9cd1773c6be938f89e5735a1f11a9f184ac3639b93cef35d5/tzlocal-5.3.1.tar.gz", hash = "sha256:cceffc7edecefea1f595541dbd6e990cb1ea3d19bf01b2809f362a03dd7921fd", size = 30761, upload-time = "2025-03-05T21:17:41.549Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c2/14/e2a54fabd4f08cd7af1c07030603c3356b74da07f7cc056e600436edfa17/tzlocal-5.3.1-py3-none-any.whl", hash = "sha256:eb1a66c3ef5847adf7a834f1be0800581b683b5608e74f86ecbcef8ab91bb85d", size = 18026, upload-time = "2025-03-05T21:17:39.857Z" },
+]
+
+[[package]]
+name = "uber-services-agent-adk"
+version = "0.1.0"
+source = { editable = "agents/uber_services" }
+dependencies = [
+    { name = "a2a-samples" },
+    { name = "click" },
+    { name = "google-adk" },
+    { name = "google-genai" },
+    { name = "python-dotenv" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "a2a-samples", editable = "." },
+    { name = "click", specifier = ">=8.1.8" },
+    { name = "google-adk", specifier = ">=0.0.3" },
+    { name = "google-genai", specifier = ">=1.9.0" },
+    { name = "python-dotenv", specifier = ">=1.1.0" },
 ]
 
 [[package]]

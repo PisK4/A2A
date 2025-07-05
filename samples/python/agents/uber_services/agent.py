@@ -453,7 +453,7 @@ def request_ride(
 ) -> Dict[str, Any]:
     """Request a ride with payment confirmation - requires blockchain task completion.
     
-    只需要提供起点和终点即可叫车，其他参数都有默认值。
+    只需要提供起点和终点即可叫车，其他参数无需用户设定。
     
     Args:
         pickup_location (str): 上车地点地址
@@ -580,7 +580,7 @@ def complete_ride_task(tool_context: ToolContext) -> Dict[str, Any]:
     """
     global _current_agent_instance
     
-    logger.info("[APTOS NETWORK] 🚗 开始在区块链上完成叫车任务...")
+    logger.info("[APTOS NETWORK] 🚗 start to complete the ride task on blockchain...")
     
     if not _current_agent_instance:
         logger.warning("[APTOS NETWORK] 错误: 没有当前 agent 实例")
@@ -591,7 +591,7 @@ def complete_ride_task(tool_context: ToolContext) -> Dict[str, Any]:
         }
         
     session_id = _current_agent_instance._current_session_id
-    logger.info(f"[APTOS NETWORK] 当前任务会话 ID: {session_id}")
+    logger.info(f"[APTOS NETWORK] current task session ID: {session_id}")
     
     if not session_id:
         logger.warning("[APTOS NETWORK] 错误: 没有会话 ID")
@@ -607,7 +607,7 @@ def complete_ride_task(tool_context: ToolContext) -> Dict[str, Any]:
         
         if blockchain_result and blockchain_result.get('status') == 'completed':
             tx_hash = blockchain_result.get('transaction_hash')
-            logger.info(f"[APTOS NETWORK] ✅ 叫车任务区块链完成成功! 交易哈希: {tx_hash}")
+            logger.info(f"[APTOS NETWORK] ✅ ride task completed on blockchain! tx hash: {tx_hash}")
             
             # Generate tracking URL
             aptos_node_url = os.environ.get('APTOS_NODE_URL', 'https://fullnode.devnet.aptoslabs.com')
@@ -728,14 +728,14 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[Dict[str
     """
     global _current_agent_instance
     
-    logger.info("[APTOS DEBUG] 开始区块链任务完成流程...")
+    # logger.info("[APTOS DEBUG] 开始区块链任务完成流程...")
     
     if not _current_agent_instance:
-        logger.warning("[APTOS DEBUG] 错误: 没有当前 agent 实例")
+        # logger.warning("[APTOS DEBUG] 错误: 没有当前 agent 实例")
         return None
         
     session_id = _current_agent_instance._current_session_id
-    logger.info(f"[APTOS DEBUG] 当前会话 ID: {session_id}")
+    # logger.info(f"[APTOS DEBUG] 当前会话 ID: {session_id}")
     
     if not session_id:
         logger.warning("[APTOS DEBUG] 错误: 没有会话 ID")
@@ -754,7 +754,7 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[Dict[str
                 new_loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(new_loop)
                 try:
-                    logger.info("[APTOS DEBUG] 在新事件循环中执行区块链任务...")
+                    # logger.info("[APTOS DEBUG] 在新事件循环中执行区块链任务...")
                     return new_loop.run_until_complete(async_complete_task_on_blockchain(
                         session_id,
                         os.getenv('HOST_AGENT_APTOS_ADDRESS', 'unknown')
@@ -762,7 +762,7 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[Dict[str
                 finally:
                     new_loop.close()
             except Exception as e:
-                logger.error(f"[APTOS DEBUG] 区块链任务线程错误: {e}")
+                # logger.error(f"[APTOS DEBUG] 区块链任务线程错误: {e}")
                 return {
                     'status': 'failed',
                     'error': str(e)
@@ -772,11 +772,11 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[Dict[str
             # Check if we're in an async context
             loop = asyncio.get_running_loop()
             # If we're in an event loop, run in a separate thread
-            logger.info("[APTOS DEBUG] 检测到事件循环，在独立线程中运行区块链任务...")
+            # logger.info("[APTOS DEBUG] 检测到事件循环，在独立线程中运行区块链任务...")
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(run_blockchain_task)
                 result = future.result(timeout=30)  # 30 second timeout
-                logger.info(f"[APTOS DEBUG] 区块链任务完成，结果: {result}")
+                # logger.info(f"[APTOS DEBUG] 区块链任务完成，结果: {result}")
                 return result
                 
         except RuntimeError:
@@ -786,7 +786,7 @@ def _complete_task_on_blockchain(tool_context: ToolContext) -> Optional[Dict[str
                 session_id,
                 os.getenv('HOST_AGENT_APTOS_ADDRESS', 'unknown')
             ))
-            logger.info(f"[APTOS DEBUG] 区块链任务完成，结果: {result}")
+            # logger.info(f"[APTOS DEBUG] 区块链任务完成，结果: {result}")
             return result
             
     except Exception as e:
@@ -859,7 +859,7 @@ async def async_complete_task_on_blockchain(session_id: str, host_agent_address:
         aptos_task_manager = AptosTaskManager(aptos_config)
         
         # Use session_id directly as string for blockchain
-        logger.info(f"[APTOS NETWORK] 开始完成叫车任务，task_id: {session_id}")
+        # logger.info(f"[APTOS NETWORK] 开始完成叫车任务，task_id: {session_id}")
         
         # Complete the task on blockchain
         result = await aptos_task_manager.complete_task(
@@ -868,7 +868,7 @@ async def async_complete_task_on_blockchain(session_id: str, host_agent_address:
         )
         
         if result and 'tx_hash' in result:
-            logger.info(f"[APTOS NETWORK] 叫车任务完成! tx: {result['tx_hash']}")
+            # logger.info(f"[APTOS NETWORK] 叫车任务完成! tx: {result['tx_hash']}")
             return {
                 'status': 'completed',
                 'transaction_hash': result['tx_hash'],
@@ -877,7 +877,7 @@ async def async_complete_task_on_blockchain(session_id: str, host_agent_address:
                 'completed_at': datetime.now().isoformat()
             }
         else:
-            logger.warning("[APTOS NETWORK] 叫车任务完成失败: 没有返回交易哈希")
+            # logger.warning("[APTOS NETWORK] 叫车任务完成失败: 没有返回交易哈希")
             return {
                 'status': 'failed',
                 'error': 'No transaction hash returned',
